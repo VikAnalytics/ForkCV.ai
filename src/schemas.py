@@ -200,3 +200,62 @@ class AppliedRecord(BaseModel):
     generation_id: Optional[str] = None
 
 
+# ─── Outreach ────────────────────────────────────────────────────────────
+class EmploymentEntry(BaseModel):
+    title: Optional[str] = None
+    organization_name: Optional[str] = None
+    start_date: Optional[str] = None  # YYYY-MM
+    end_date: Optional[str] = None
+    current: bool = False
+
+
+class EducationEntry(BaseModel):
+    school: Optional[str] = None
+    degree: Optional[str] = None
+
+
+class ContactCandidate(BaseModel):
+    """Raw contact data from the provider (e.g. Apollo)."""
+    apollo_id: Optional[str] = None
+    name: str
+    title: str = ""
+    headline: str = ""
+    linkedin_url: Optional[str] = None
+    email: Optional[str] = None
+    email_status: Optional[str] = None  # 'verified' | 'guessed' | 'locked'
+    organization_name: str = ""
+    departments: List[str] = Field(default_factory=list)
+    seniority: Optional[str] = None
+    employment_history: List[EmploymentEntry] = Field(default_factory=list)
+    education: List[EducationEntry] = Field(default_factory=list)
+    photo_url: Optional[str] = None
+
+
+class ScoredContact(BaseModel):
+    contact: ContactCandidate
+    score: int  # 0-100
+    score_breakdown: dict = Field(default_factory=dict)  # signal → points
+    tenure_months: int = 0
+    category: str = ""  # 'recruiter' | 'hiring_manager' | 'team_ic' | 'other'
+    shared_signals: List[str] = Field(default_factory=list)  # human-readable bits we'd weave in
+
+
+class OutreachDraft(BaseModel):
+    linkedin_note: str  # <= ~300 chars
+    email_subject: str
+    email_body: str
+
+
+class OutreachContact(BaseModel):
+    scored: ScoredContact
+    draft: OutreachDraft
+
+
+class OutreachRecord(BaseModel):
+    generation_id: str
+    company: str
+    role_title: str = ""
+    created_at: str
+    contacts: List[OutreachContact] = Field(default_factory=list)
+
+

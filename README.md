@@ -11,6 +11,7 @@ Local AI-powered resume tailoring. Drop in your master CV (PDF), paste a job lin
 - **Bulk mode**: paste 20-30 job links (LinkedIn or company URLs), generates one tailored PDF per posting, named `Vikrant_Indi_<Company>_Resume.pdf`. Download individually or as a ZIP.
 - **Applied-jobs tracker**: mark applications as you submit, edit status (applied / assessment / interview / offer / rejected / withdrew / ghosted), notes, date. Persists across refreshes.
 - **Master-CV editor**: edit bullets, skills, roles, and projects from the browser. Saves back to `data/master_cv_bank.json`.
+- **Outreach (optional)**: for each generated resume, find 10 ranked contacts at the company (recruiters / hiring managers / team ICs) via the Hunter.io API, with per-contact LinkedIn note + email draft. Hunter free tier covers ~25 searches/mo. Set `HUNTER_API_KEY` in `.env.local` to enable.
 
 All state (master CV, generation history, applied jobs) lives on your local disk under `data/`. Nothing leaves your machine except the JD + master CV sent to the OpenAI API for analysis and selection.
 
@@ -81,6 +82,21 @@ Click **Edit master CV** in the top bar. Edit/add/delete bullets per role, skill
 ### Applied-jobs tracker
 Click **Applied jobs (N)** in the top bar. Each card has an editable status dropdown, date picker, and notes. Auto-saves on change.
 
+### Outreach (optional)
+Requires `HUNTER_API_KEY` in `.env.local` (sign up at <https://hunter.io>, key at <https://hunter.io/api-keys>). After generating a resume, expand the **Outreach** panel in the left column and click **Find contacts**. Approx. 30s later you get 10 ranked contact cards per job:
+
+- Name + title + organization
+- Category badge: `recruiter` / `hiring_manager` / `team_ic` / `other`
+- Score 0-100 (title relevance + team match + shared school/employer + tenure sweet spot)
+- LinkedIn URL + email (Hunter returns most emails inline; missing ones can be fetched with the per-card **Find email** button which calls Hunter's email-finder)
+- Short LinkedIn note (≤300 chars) + email subject + body, all editable
+- One-click `mailto:` button that opens your default mail client pre-filled
+- Copy buttons for the note and email body
+
+The message generator is heavily prompt-engineered to avoid AI-tone tells (no "I hope this finds you well", no "thrilled", no em-dashes, no three-paragraph cold-email scaffold). Every draft must contain one concrete detail about the recipient and one concrete detail about your own work, both drawn from real data.
+
+Drafts are cached per generation in `data/outreach.json` so re-opening a past job restores them without re-querying Hunter.
+
 ## Architecture
 
 ```
@@ -126,6 +142,10 @@ ForkCV.ai/
 | `POST /api/applied` | Create application |
 | `PATCH /api/applied/{id}` | Update status / notes / date |
 | `DELETE /api/applied/{id}` | Remove |
+| `POST /api/outreach/discover` | Hunter search + scoring + draft generation for a generation_id |
+| `POST /api/outreach/reveal` | Hunter email-finder for one cached contact; updates `outreach.json` in place |
+| `GET /api/outreach/{generation_id}` | Fetch cached outreach record (or `null`) |
+| `DELETE /api/outreach/{generation_id}` | Remove cached outreach |
 
 ## Privacy
 

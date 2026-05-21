@@ -10,6 +10,9 @@ const API = {
   bulkZip: '/api/bulk/zip',
   generations: '/api/generations',
   applied: '/api/applied',
+  outreachDiscover: '/api/outreach/discover',
+  outreachReveal: '/api/outreach/reveal',
+  outreach: '/api/outreach',
 };
 
 const APPLIED_STATUSES = [
@@ -180,6 +183,8 @@ function wirePanel(panel, state) {
       setPdf(state, previewEl, previewEmpty, data.pdf_base64);
       syncTabToBulk(state, data);
       refreshTabAppliedUI(panel, state);
+      refreshTabOutreachUI(panel, state);
+      loadCachedOutreach(panel, state);
       renderReport(panel, state);
       renderEditor(panel, state);
       editorEl.classList.remove('hidden');
@@ -236,6 +241,13 @@ function wirePanel(panel, state) {
     }
     markApplied(state, panel);
   });
+
+  // Outreach
+  const outreachBlock = panel.querySelector('[data-outreach]');
+  const findBtn = panel.querySelector('[data-outreach-find]');
+  const refreshBtn = panel.querySelector('[data-outreach-refresh]');
+  findBtn.addEventListener('click', () => runOutreachDiscover(panel, state, false));
+  refreshBtn.addEventListener('click', () => runOutreachDiscover(panel, state, true));
 }
 
 const BUCKET_TO_CLASS = { primary_tech: 'tech', core_impact: 'impact', must_have: 'musthave', domain: 'domain' };
@@ -719,6 +731,8 @@ function hydrateTabPanel(state, pdfBase64) {
     if (found) state.appliedId = found.id;
   }
   refreshTabAppliedUI(panel, state);
+  refreshTabOutreachUI(panel, state);
+  loadCachedOutreach(panel, state);
   setTabStatus(state.id, 'ready');
 }
 
@@ -1165,6 +1179,243 @@ async function hydrateHistory() {
 
 // ─── Applied: tab inline + drawer ──────────────────────────────────────
 let appliedRecords = [];
+
+// ─── Outreach (per-tab panel) ──────────────────────────────────────────
+function refreshTabOutreachUI(panel, state) {
+  const block = panel.querySelector('[data-outreach]');
+  if (!block) return;
+  block.classList.toggle('hidden', !state.generationId);
+  const findBtn = panel.querySelector('[data-outreach-find]');
+  findBtn.disabled = !state.generationId;
+}
+
+async function loadCachedOutreach(panel, state) {
+  if (!state.generationId) return;
+  try {
+    const r = await fetch(`${API.outreach}/${encodeURIComponent(state.generationId)}`);
+    if (!r.ok) return;
+    const txt = await r.text();
+    if (!txt || txt === 'null') return;
+    const rec = JSON.parse(txt);
+    if (rec && rec.contacts) {
+      renderOutreach(panel, rec);
+      panel.querySelector('[data-outreach]').querySelector('details').open = true;
+    }
+  } catch {}
+}
+
+async function runOutreachDiscover(panel, state, refresh) {
+  if (!state.generationId) return;
+  const findBtn = panel.querySelector('[data-outreach-find]');
+  const refreshBtn = panel.querySelector('[data-outreach-refresh]');
+  const statusEl = panel.querySelector('[data-outreach-status]');
+  findBtn.disabled = true;
+  refreshBtn.disabled = true;
+  statusEl.textContent = 'Searching Hunter + scoring + writing drafts (≈30s)…';
+  statusEl.classList.remove('err');
+  try {
+    const r = await fetch(API.outreachDiscover, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ generation_id: state.generationId, top_k: 10, refresh: !!refresh }),
+    });
+    if (!r.ok) {
+      let msg = `${r.status}`;
+      try {
+        const j = await r.json();
+        if (j.detail) msg += `: ${typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail)}`;
+      } catch (_) {}
+      throw new Error(msg);
+    }
+    const rec = await r.json();
+    renderOutreach(panel, rec);
+    statusEl.textContent = `${(rec.contacts || []).length} contacts ranked.`;
+  } catch (e) {
+    statusEl.textContent = `Outreach failed: ${e.message}`;
+    statusEl.classList.add('err');
+  } finally {
+    findBtn.disabled = false;
+    refreshBtn.disabled = false;
+  }
+}
+
+function renderOutreach(panel, rec) {
+  const meta = panel.querySelector('[data-outreach-meta]');
+  const list = panel.querySelector('[data-outreach-list]');
+  const refreshBtn = panel.querySelector('[data-outreach-refresh]');
+  list.innerHTML = '';
+  if (!rec || !rec.contacts || !rec.contacts.length) {
+    meta.textContent = '· no contacts';
+    list.innerHTML = `<div class="muted" style="padding:0.5rem 0;">No contacts returned. Try refining the company name, or your Hunter free tier may be exhausted for the month.</div>`;
+    refreshBtn.classList.remove('hidden');
+    return;
+  }
+  meta.textContent = `· ${rec.contacts.length} ranked (saved ${shortDate(rec.created_at)})`;
+  refreshBtn.classList.remove('hidden');
+  rec.contacts.forEach((oc, i) => list.appendChild(buildContactCard(oc, i + 1, rec.generation_id, i)));
+}
+
+function buildContactCard(oc, rank, genId, contactIndex) {
+  const sc = oc.scored;
+  const c = sc.contact;
+  const draft = oc.draft;
+  const card = document.createElement('div');
+  card.className = 'outreach-card';
+  const first = (c.name || '').split(' ')[0] || 'them';
+  card.innerHTML = `
+    <div class="outreach-card-head">
+      <span class="outreach-rank">#${rank}</span>
+      <div class="outreach-who">
+        <div class="outreach-name"></div>
+        <div class="outreach-title muted"></div>
+      </div>
+      <div class="outreach-score-block">
+        <span class="outreach-cat"></span>
+        <span class="outreach-score"></span>
+      </div>
+    </div>
+    <div class="outreach-actions-row">
+      <a class="btn btn-ghost outreach-li" target="_blank" rel="noopener noreferrer">LinkedIn ↗</a>
+      <a class="btn btn-ghost outreach-mailto">Email ↗</a>
+      <button class="btn btn-ghost outreach-reveal" title="Calls Hunter.io email-finder (counts against your monthly Hunter quota)">Find email</button>
+      <span class="outreach-email-pill muted"></span>
+      <span class="outreach-reveal-status muted"></span>
+    </div>
+    <div class="outreach-shared muted"></div>
+    <div class="outreach-msg">
+      <div class="outreach-msg-head">
+        <span>LinkedIn note <span class="muted outreach-note-len"></span></span>
+        <button class="btn-link" data-copy-li>copy</button>
+      </div>
+      <textarea class="master-textarea outreach-note" rows="3"></textarea>
+    </div>
+    <div class="outreach-msg">
+      <div class="outreach-msg-head">
+        <span>Email</span>
+        <button class="btn-link" data-copy-email>copy</button>
+      </div>
+      <input class="master-input outreach-subject" placeholder="subject" />
+      <textarea class="master-textarea outreach-body" rows="6"></textarea>
+    </div>
+  `;
+  card.querySelector('.outreach-name').textContent = c.name || '(unknown)';
+  const titleBits = [c.title, c.organization_name].filter(Boolean).join(' · ');
+  card.querySelector('.outreach-title').textContent = titleBits || c.headline || '';
+  const cat = card.querySelector('.outreach-cat');
+  cat.textContent = sc.category || 'other';
+  cat.classList.add(`cat-${sc.category || 'other'}`);
+  card.querySelector('.outreach-score').textContent = `${sc.score}/100`;
+
+  const liEl = card.querySelector('.outreach-li');
+  if (c.linkedin_url) {
+    liEl.href = c.linkedin_url;
+  } else {
+    liEl.classList.add('hidden');
+  }
+
+  const mailtoEl = card.querySelector('.outreach-mailto');
+  const emailPill = card.querySelector('.outreach-email-pill');
+  const revealBtn = card.querySelector('.outreach-reveal');
+  const revealStatus = card.querySelector('.outreach-reveal-status');
+
+  function applyEmailState(email, status) {
+    c.email = email || null;
+    if (email) {
+      mailtoEl.classList.remove('hidden');
+      const sj = card.querySelector('.outreach-subject');
+      const bd = card.querySelector('.outreach-body');
+      mailtoEl.href = mailtoHref(email, sj ? sj.value : draft.email_subject, bd ? bd.value : draft.email_body);
+      emailPill.textContent = email;
+      revealBtn.classList.add('hidden');
+    } else {
+      mailtoEl.classList.add('hidden');
+      emailPill.textContent = status === 'locked'
+        ? '✱ email locked'
+        : '✱ no email on file';
+      revealBtn.classList.remove('hidden');
+    }
+  }
+  applyEmailState(c.email, c.email_status);
+
+  revealBtn.addEventListener('click', async () => {
+    if (genId == null || contactIndex == null) return;
+    if (!confirm('This calls Hunter email-finder for this contact and counts against your monthly Hunter quota. Continue?')) return;
+    revealBtn.disabled = true;
+    revealStatus.textContent = 'Revealing…';
+    revealStatus.classList.remove('err');
+    try {
+      const r = await fetch(API.outreachReveal, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ generation_id: genId, contact_index: contactIndex }),
+      });
+      if (!r.ok) {
+        let msg = `${r.status}`;
+        try {
+          const j = await r.json();
+          if (j.detail) msg += `: ${typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail)}`;
+        } catch (_) {}
+        throw new Error(msg);
+      }
+      const updated = await r.json();
+      const newEmail = updated.scored.contact.email;
+      const newStatus = updated.scored.contact.email_status;
+      applyEmailState(newEmail, newStatus);
+      revealStatus.textContent = newEmail ? '✓ revealed' : '';
+    } catch (e) {
+      revealStatus.textContent = `Reveal failed: ${e.message}`;
+      revealStatus.classList.add('err');
+    } finally {
+      revealBtn.disabled = false;
+    }
+  });
+
+  const sharedEl = card.querySelector('.outreach-shared');
+  sharedEl.textContent = (sc.shared_signals || []).join(' · ') || '';
+
+  const noteEl = card.querySelector('.outreach-note');
+  const noteLen = card.querySelector('.outreach-note-len');
+  noteEl.value = draft.linkedin_note || '';
+  function updateLen() { noteLen.textContent = `${noteEl.value.length}/300`; }
+  updateLen();
+  noteEl.addEventListener('input', updateLen);
+
+  const subjEl = card.querySelector('.outreach-subject');
+  const bodyEl = card.querySelector('.outreach-body');
+  subjEl.value = draft.email_subject || '';
+  bodyEl.value = draft.email_body || '';
+
+  const refreshMailto = () => {
+    if (!c.email) return;
+    mailtoEl.href = mailtoHref(c.email, subjEl.value, bodyEl.value);
+  };
+  subjEl.addEventListener('input', refreshMailto);
+  bodyEl.addEventListener('input', refreshMailto);
+
+  card.querySelector('[data-copy-li]').addEventListener('click', () => copyText(noteEl.value));
+  card.querySelector('[data-copy-email]').addEventListener('click', () => {
+    copyText(`Subject: ${subjEl.value}\n\n${bodyEl.value}`);
+  });
+
+  return card;
+}
+
+function mailtoHref(email, subject, body) {
+  const s = encodeURIComponent(subject || '');
+  const b = encodeURIComponent(body || '');
+  return `mailto:${email}?subject=${s}&body=${b}`;
+}
+
+function copyText(s) {
+  navigator.clipboard?.writeText(s).catch(() => {
+    const ta = document.createElement('textarea');
+    ta.value = s;
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); } catch {}
+    ta.remove();
+  });
+}
 
 function refreshTabAppliedUI(panel, state) {
   const wrap = panel.querySelector('[data-applied-wrap]');

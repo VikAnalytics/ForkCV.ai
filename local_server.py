@@ -32,11 +32,20 @@ from src.latex_compiler import compile_pdf, render_tex
 from src.report import build_report
 from src.schemas import (
     AppliedRecord,
+    ContactCandidate,
     GenerationRecord,
     GenerationSummary,
+    JDAnalysis,
     MasterCV,
+    OutreachContact,
+    OutreachDraft,
+    OutreachRecord,
     PipelineReport,
+    ScoredContact,
 )
+from src.contact_provider import ApolloAuthError, reveal_email as apollo_reveal_email, search_contacts
+from src.contact_scorer import rank_candidates
+from src.outreach_generator import generate_outreach
 from src.selector_agent import apply_selection, select
 from src.skills_enricher import enrich_skills
 from src.sponsorship_extractor import extract_sponsorship
@@ -51,6 +60,7 @@ WEB_LOCAL_DIR = ROOT / "web_local"
 MASTER_CV_PATH = DATA_DIR / "master_cv_bank.json"
 GENERATIONS_PATH = DATA_DIR / "generations.json"
 APPLIED_PATH = DATA_DIR / "applied_jobs.json"
+OUTREACH_PATH = DATA_DIR / "outreach.json"
 
 _store_lock = threading.Lock()
 
@@ -417,6 +427,198 @@ async def delete_applied(app_id: str):
         if len(new) == len(items):
             raise HTTPException(404, "applied record not found")
         _save_list(APPLIED_PATH, new)
+    return {"ok": True}
+
+
+# ─── Outreach ────────────────────────────────────────────────────────────
+class OutreachDiscoverRequest(BaseModel):
+    generation_id: str
+    top_k: int = 10
+    refresh: bool = False  # if True, ignore cache and re-query Apollo
+
+
+@app.get("/api/outreach/{gen_id}", response_model=Optional[OutreachRecord])
+async def get_outreach(gen_id: str):
+    with _store_lock:
+        items = _load_list(OUTREACH_PATH)
+    for it in items:
+        if it.get("generation_id") == gen_id:
+            return OutreachRecord.model_validate(it)
+    return None  # 200 with empty body; client treats as "not yet generated"
+
+
+@app.post("/api/outreach/discover", response_model=OutreachRecord)
+async def discover_outreach(req: OutreachDiscoverRequest):
+    # 1. Load the parent generation (for company, jd, cv).
+    with _store_lock:
+        gens = _load_list(GENERATIONS_PATH)
+    gen = next((g for g in gens if g.get("id") == req.generation_id), None)
+    if gen is None:
+        raise HTTPException(404, "generation not found")
+
+    # 2. Cached?
+    if not req.refresh:
+        with _store_lock:
+            existing = _load_list(OUTREACH_PATH)
+        cached = next((o for o in existing if o.get("generation_id") == req.generation_id), None)
+        if cached:
+            return OutreachRecord.model_validate(cached)
+
+    # 3. Load master + JD analysis from the cached generation.
+    master = MasterCV.model_validate(gen["cv"])
+    analysis_dict = (gen.get("report") or {}).get("analysis") or {}
+    try:
+        jd_analysis = JDAnalysis.model_validate(analysis_dict) if analysis_dict else None
+    except Exception:
+        jd_analysis = None
+    company = gen.get("company") or ""
+    role_title = (jd_analysis.role_title if jd_analysis else "") or ""
+
+    # 4. Apollo search.
+    try:
+        candidates = await asyncio.get_running_loop().run_in_executor(
+            None,
+            search_contacts,
+            company,
+            role_title,
+            (jd_analysis.must_have_keywords[:6] if jd_analysis else []),
+        )
+    except ApolloAuthError as e:
+        raise HTTPException(401, str(e))
+    except Exception as e:
+        raise HTTPException(502, f"Contact search failed: {e}")
+
+    if not candidates:
+        # Persist empty result so the UI shows "no contacts" without re-querying.
+        record = OutreachRecord(
+            generation_id=req.generation_id,
+            company=company,
+            role_title=role_title,
+            created_at=_now_iso(),
+            contacts=[],
+        )
+        _upsert_outreach(record)
+        return record
+
+    # 5. Score + rank.
+    scored = rank_candidates(candidates, master, role_title, jd_analysis, top_k=req.top_k)
+
+    # 6. Generate outreach drafts (parallel up to 4 at a time).
+    #    One failing draft must not kill the batch — fall back to a stub draft
+    #    so the contact still surfaces with name + email + LinkedIn URL.
+    loop = asyncio.get_running_loop()
+    sem = asyncio.Semaphore(4)
+
+    async def gen_one(sc: ScoredContact) -> OutreachContact:
+        async with sem:
+            try:
+                draft = await loop.run_in_executor(
+                    None,
+                    lambda: generate_outreach(sc, master, company, role_title, jd=jd_analysis),
+                )
+            except Exception as e:
+                first = (sc.contact.name or "there").split()[0] if sc.contact.name else "there"
+                draft = OutreachDraft(
+                    linkedin_note=f"{first}, applying for {role_title} at {company}. Open to a quick chat?",
+                    email_subject=f"{role_title} at {company}",
+                    email_body=(
+                        f"Hi {first},\n\nJust applied for the {role_title} role at {company}. "
+                        f"Happy to share a tailored resume and answer any questions.\n\n"
+                        f"(Draft generation failed for this contact: {e}. Edit me before sending.)\n\n"
+                        f"{(master.personal_info.name or '').split()[0]}"
+                    ),
+                )
+        return OutreachContact(scored=sc, draft=draft)
+
+    contacts = await asyncio.gather(*(gen_one(s) for s in scored))
+
+    # 7. Persist.
+    record = OutreachRecord(
+        generation_id=req.generation_id,
+        company=company,
+        role_title=role_title,
+        created_at=_now_iso(),
+        contacts=list(contacts),
+    )
+    _upsert_outreach(record)
+    return record
+
+
+def _upsert_outreach(record: OutreachRecord) -> None:
+    with _store_lock:
+        items = _load_list(OUTREACH_PATH)
+        items = [i for i in items if i.get("generation_id") != record.generation_id]
+        items.insert(0, record.model_dump())
+        _save_list(OUTREACH_PATH, items)
+
+
+class OutreachRevealRequest(BaseModel):
+    generation_id: str
+    contact_index: int
+
+
+@app.post("/api/outreach/reveal", response_model=OutreachContact)
+async def reveal_outreach_email(req: OutreachRevealRequest):
+    """Burn 1 Apollo credit to reveal a single contact's email. Updates the
+    cached outreach record in place."""
+    with _store_lock:
+        items = _load_list(OUTREACH_PATH)
+    record = next((i for i in items if i.get("generation_id") == req.generation_id), None)
+    if record is None:
+        raise HTTPException(404, "outreach record not found")
+    contacts = record.get("contacts") or []
+    if req.contact_index < 0 or req.contact_index >= len(contacts):
+        raise HTTPException(400, "contact_index out of range")
+    target = contacts[req.contact_index]
+    contact = (target.get("scored") or {}).get("contact") or {}
+
+    name = contact.get("name") or ""
+    parts = name.strip().split()
+    first = parts[0] if parts else None
+    last = parts[-1] if len(parts) > 1 else None
+
+    try:
+        result = await asyncio.get_running_loop().run_in_executor(
+            None,
+            lambda: apollo_reveal_email(
+                apollo_id=contact.get("apollo_id"),
+                linkedin_url=contact.get("linkedin_url"),
+                first_name=first,
+                last_name=last,
+                organization_name=contact.get("organization_name"),
+            ),
+        )
+    except ApolloAuthError as e:
+        raise HTTPException(401, str(e))
+    except Exception as e:
+        raise HTTPException(502, f"Email find failed: {e}")
+
+    revealed_email = result.get("email")
+    revealed_status = result.get("email_status")
+    if not revealed_email:
+        # Provider returned no email — surface as a soft error.
+        raise HTTPException(404, "Could not find a verified email for this contact.")
+
+    # Patch the cached record + persist.
+    contact["email"] = revealed_email
+    contact["email_status"] = revealed_status or "verified"
+    target["scored"]["contact"] = contact
+    contacts[req.contact_index] = target
+    record["contacts"] = contacts
+    with _store_lock:
+        items = [i for i in items if i.get("generation_id") != req.generation_id]
+        items.insert(0, record)
+        _save_list(OUTREACH_PATH, items)
+
+    return OutreachContact.model_validate(target)
+
+
+@app.delete("/api/outreach/{gen_id}")
+async def delete_outreach(gen_id: str):
+    with _store_lock:
+        items = _load_list(OUTREACH_PATH)
+        new = [i for i in items if i.get("generation_id") != gen_id]
+        _save_list(OUTREACH_PATH, new)
     return {"ok": True}
 
 
