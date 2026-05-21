@@ -1,0 +1,138 @@
+%-------------------------
+% Resume — generated from MasterCV
+%-------------------------
+\documentclass[a4paper,10pt]{article}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{xcolor}
+\usepackage[empty]{fullpage}
+\usepackage{titlesec}
+\usepackage{geometry}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{fancyhdr}
+\usepackage{microtype}
+\usepackage{tabularx}
+\usepackage{array}
+
+% ATS-friendly ligature handling lives in src/latex_compiler.py:tex_escape —
+% we insert an empty group `{}` between `f` and the following `i`/`l`/`f` so
+% the typesetter never composes the fi/fl/ff ligature glyph. PDF text-layer
+% extraction returns "efficiency" instead of "eﬃciency", letting Workday,
+% Taleo, Greenhouse, etc. keyword-match the decomposed form.
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot{}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+\geometry{left=0.8cm, top=0.5cm, right=0.8cm, bottom=0.5cm}
+
+\urlstyle{same}
+% Allow looser word spacing to avoid bad linebreaks; nudge hyphenation tolerance up.
+\sloppy
+\hyphenpenalty=1000
+\tolerance=2000
+\emergencystretch=3em
+
+% Tight section heads with underline
+\titleformat{\section}
+  {\scshape\large\bfseries}
+  {}{0em}
+  {}[\vspace{-3pt}\hrulefill\vspace{-3pt}]
+\titlespacing*{\section}{0pt}{1pt}{0pt}
+
+% Role / project header block: title + right-aligned meta on line 1, sub + right meta on line 2
+\newcommand{\rolehead}[4]{%
+  \noindent\textbf{#1}\hfill\textit{\footnotesize #2}\\%
+  \textit{\footnotesize #3}\hfill\textit{\footnotesize #4}\par%
+  \vspace{0.2mm}%
+}
+
+\newcommand{\projhead}[2]{%
+  \noindent\textbf{#1}\hfill\textit{\footnotesize #2}\par%
+  \vspace{0.2mm}%
+}
+
+% Linked variant — name is hyperlinked, URL shown small/italic on the right.
+\newcommand{\projheadlinked}[3]{%
+  \noindent\textbf{\href{#2}{#1}}\hfill\textit{\footnotesize \href{#2}{#3}}\par%
+  \vspace{0.2mm}%
+}
+
+% Bullets: tight, footnotesize, justified
+\newenvironment{bullets}{%
+  \begin{itemize}[leftmargin=4mm, rightmargin=1mm, topsep=0pt, partopsep=0pt, parsep=0pt, itemsep=0.5pt, label={\footnotesize\textbullet}]\footnotesize%
+}{\end{itemize}\vspace{0.5mm}}
+
+\setlength{\parindent}{0pt}
+
+\begin{document}
+
+%----------HEADING----------
+\begin{center}
+  {\Large \textbf{<< cv.personal_info.name | tex >>}}\\[1mm]
+  \footnotesize
+<% set parts = [] %>
+<% if cv.personal_info.email %><% set _ = parts.append('\\href{mailto:' ~ (cv.personal_info.email | tex) ~ '}{' ~ (cv.personal_info.email | tex) ~ '}') %><% endif %>
+<% if cv.personal_info.phone %><% set _ = parts.append(cv.personal_info.phone | tex) %><% endif %>
+<% if cv.personal_info.linkedin %><% set _ = parts.append('\\href{https://' ~ (cv.personal_info.linkedin | tex) ~ '}{' ~ (cv.personal_info.linkedin | tex) ~ '}') %><% endif %>
+<% if cv.personal_info.github %><% set _ = parts.append('\\href{https://' ~ (cv.personal_info.github | tex) ~ '}{' ~ (cv.personal_info.github | tex) ~ '}') %><% endif %>
+  << parts | join(' \\quad|\\quad ') >>
+\end{center}
+
+<% if cv.professional_summary %>
+\section{Professional Summary}
+{\footnotesize << cv.professional_summary | tex >>}\par
+<% endif %>
+
+<% if cv.skills %>
+\section{Technical Skills}
+{\fontsize{7.5pt}{9pt}\selectfont
+\setlength{\tabcolsep}{0pt}
+\renewcommand{\arraystretch}{1.2}
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{6.8cm}@{\hspace{4pt}}>{\raggedright\arraybackslash}X@{}}
+<% for s in cv.skills %>\textbf{<< s.category | tex >>} & << s.items | map('tex') | join(', ') >><% if not loop.last %> \\<% endif %>
+<% endfor %>\end{tabularx}
+}
+\vspace{1mm}
+<% endif %>
+
+<% if cv.experience %>
+\section{Experience}
+<% for exp in cv.experience %>
+\rolehead{<< exp.role | tex >>}{<< (exp.date or '') | tex >>}{<< exp.company | tex >>}{<< (exp.location or '') | tex >>}
+<% if exp.bullet_pool %>
+\begin{bullets}
+<% for b in exp.bullet_pool %>  \item << b.text | tex >>
+<% endfor %>\end{bullets}
+<% endif %>
+<% endfor %>
+<% endif %>
+
+<% if cv.projects %>
+\section{Projects}
+<% for p in cv.projects %>
+<% if p.link %>\projheadlinked{<< p.name | tex >>}{<< p.link | url >>}{<< p.link | short_url | tex >>}
+<% else %>\projhead{<< p.name | tex >>}{<< (p.location or '') | tex >>}
+<% endif %>
+<% if p.bullet_pool %>
+\begin{bullets}
+<% for b in p.bullet_pool %>  \item << b.text | tex >>
+<% endfor %>\end{bullets}
+<% endif %>
+<% endfor %>
+<% endif %>
+
+<% if cv.education %>
+\section{Education}
+<% for edu in cv.education %>
+\rolehead{<< (edu.degree or '') | tex >>}{<% if edu.gpa %>GPA: << edu.gpa | tex >><% endif %>}{<< edu.institution | tex >>}{<< (edu.location or '') | tex >>}
+<% if edu.coursework %>
+{\footnotesize\textbf{Relevant Coursework:} << edu.coursework | map('tex') | join(', ') >>}\par
+\vspace{1mm}
+<% endif %>
+<% endfor %>
+<% endif %>
+
+\end{document}

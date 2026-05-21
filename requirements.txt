@@ -1,0 +1,12 @@
+openai>=1.50.0
+pymupdf>=1.24.0
+pydantic>=2.5.0
+python-dotenv>=1.0.0
+jinja2>=3.1.0
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+
+# Bulk JD scraping from job links (LinkedIn + generic career pages).
+httpx>=0.27.0
+trafilatura>=1.12.0
+beautifulsoup4>=4.12.0

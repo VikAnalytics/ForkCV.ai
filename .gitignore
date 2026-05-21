@@ -1,0 +1,37 @@
+# ── Secrets ────────────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ── Python ─────────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# ── OS / IDE ───────────────────────────────────────────────────────────
+.DS_Store
+.idea/
+.vscode/
+.claude/
+
+# ── User data (never committed) ────────────────────────────────────────
+# Everything inside data/ is the user's personal CV bank, generation
+# history, applied-jobs tracker, and intermediate JSON. None of it should
+# ever land in git.
+data/*
+!data/.gitkeep
+
+# Generated PDFs, .tex, .log artifacts from the LaTeX pipeline.
+outputs/
+
+# Loose PDFs anywhere at repo root (e.g. someone's own resume).
+/*.pdf
+
+# Internal status / planning docs (replaced by README in public repo).
+progress.md
+plan.md

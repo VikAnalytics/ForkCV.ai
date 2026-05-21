@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Master Resume Builder — local</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <h1>Master Resume Builder <span class="muted">— local</span></h1>
+      <div class="topbar-spacer"></div>
+      <button id="openAppliedBtn" class="btn btn-ghost">Applied jobs (0)</button>
+      <button id="editMasterBtn" class="btn btn-ghost">Edit master CV</button>
+      <span id="masterStatus" class="status-pill">loading master CV…</span>
+    </header>
+
+    <div id="masterBackdrop" class="master-backdrop hidden"></div>
+    <aside id="masterDrawer" class="master-drawer hidden" aria-hidden="true">
+      <div class="master-drawer-header">
+        <h2>Master CV</h2>
+        <span class="muted" id="masterDrawerStatus"></span>
+        <div class="topbar-spacer"></div>
+        <button id="masterSaveBtn" class="btn btn-primary">Save</button>
+        <button id="masterCloseBtn" class="btn">Close</button>
+      </div>
+      <div class="master-drawer-body" id="masterDrawerBody"></div>
+    </aside>
+
+    <div id="appliedBackdrop" class="master-backdrop hidden"></div>
+    <aside id="appliedDrawer" class="master-drawer hidden" aria-hidden="true">
+      <div class="master-drawer-header">
+        <h2>Applied jobs</h2>
+        <div class="topbar-spacer"></div>
+        <button id="appliedCloseBtn" class="btn">Close</button>
+      </div>
+      <div class="master-drawer-body" id="appliedDrawerBody"></div>
+    </aside>
+
+    <section class="bulkbar">
+      <details id="bulkPanel">
+        <summary>
+          <span class="bulk-title">Bulk import jobs</span>
+          <span class="muted bulk-hint">paste links → generate one tailored PDF per job</span>
+        </summary>
+        <div class="bulk-body">
+          <label class="block">
+            Job links <span class="muted">(one per line — LinkedIn or company URLs)</span>
+            <div class="linked-input">
+              <div class="line-gutter" id="bulkLinksGutter">1</div>
+              <textarea id="bulkLinks" rows="6" spellcheck="false" placeholder="https://www.linkedin.com/jobs/view/4112345678&#10;https://jobs.lever.co/acme/abc123&#10;https://careers.stripe.com/jobs/xyz"></textarea>
+            </div>
+          </label>
+          <label class="block bulk-cookie-row">
+            <span>LinkedIn <code>li_at</code> cookie <span class="muted">(optional — only for restricted LI jobs; stored in your browser only)</span></span>
+            <input id="liCookie" type="password" placeholder="AQED…" autocomplete="off" />
+          </label>
+          <div class="bulk-actions">
+            <button id="bulkParseBtn" class="btn btn-primary">Parse links</button>
+            <button id="bulkGenerateAllBtn" class="btn" disabled>Generate all</button>
+            <button id="bulkDownloadZipBtn" class="btn btn-save" disabled>Download all (ZIP)</button>
+            <span id="bulkProgress" class="bulk-progress muted"></span>
+          </div>
+        </div>
+      </details>
+    </section>
+
+    <div class="workspace">
+      <aside id="bulkSidebar" class="bulk-sidebar hidden">
+        <div class="bulk-sidebar-header">
+          <span>Jobs</span>
+          <button id="bulkClearBtn" class="btn-link" title="Clear list">clear</button>
+        </div>
+        <div id="bulkList" class="bulk-list"></div>
+      </aside>
+
+      <div class="workspace-main">
+        <nav class="tabbar">
+          <div id="tabs" class="tabs"></div>
+          <button id="newTabBtn" class="tab-add" title="New tab (Ctrl+T)">+ New tab</button>
+        </nav>
+
+        <main id="panels"></main>
+      </div>
+    </div>
+
+    <template id="tabPanelTemplate">
+      <section class="panel" data-tab-panel>
+        <div class="panel-left">
+          <div class="field-row">
+            <label>Company <input type="text" data-company placeholder="e.g. Acme" /></label>
+            <div class="actions">
+              <button data-generate class="btn btn-primary">Generate</button>
+              <button data-apply class="btn" disabled>Apply changes</button>
+              <button data-save class="btn btn-save" disabled>Save PDF</button>
+              <span data-applied-wrap class="hidden"><button data-applied-btn class="btn btn-ghost">Mark applied</button></span>
+            </div>
+          </div>
+          <label class="block">
+            Job description
+            <textarea data-jd rows="10" placeholder="Paste the JD here…"></textarea>
+          </label>
+
+          <div data-report class="report hidden">
+            <details open>
+              <summary><h3 class="inline-h3">JD signals</h3><span class="muted" data-report-meta></span></summary>
+              <div class="report-body">
+                <div class="sponsorship-block hidden" data-sponsorship>
+                  <div class="sponsorship-header">
+                    <span class="sponsorship-label">Visa sponsorship</span>
+                    <span class="sponsorship-badge" data-sponsorship-badge></span>
+                  </div>
+                  <ul class="sponsorship-evidence" data-sponsorship-evidence></ul>
+                </div>
+                <div class="language-block hidden" data-languages>
+                  <div class="language-header">
+                    <span class="language-label">Language constraints</span>
+                  </div>
+                  <div class="language-chips" data-language-chips></div>
+                  <ul class="language-evidence" data-language-evidence></ul>
+                </div>
+                <div class="chip-group" data-chips-tech></div>
+                <div class="chip-group" data-chips-impact></div>
+                <div class="chip-group" data-chips-musthave></div>
+                <div class="chip-group" data-chips-domain></div>
+                <div class="placements-block">
+                  <div class="placements-header">
+                    <span>Keyword placements</span>
+                    <label class="toggle"><input type="checkbox" data-unmatched-toggle> show keywords with no placement</label>
+                  </div>
+                  <div data-placements></div>
+                </div>
+                <div class="skill-add-block hidden" data-skill-additions-block>
+                  <div class="placements-header">Skill additions</div>
+                  <div data-skill-additions></div>
+                </div>
+              </div>
+            </details>
+          </div>
+
+          <div data-editor class="editor hidden">
+            <div class="editor-section">
+              <h3>Professional Summary</h3>
+              <textarea data-summary rows="4"></textarea>
+            </div>
+            <div class="editor-section">
+              <h3>Skills</h3>
+              <div data-skills></div>
+            </div>
+            <div class="editor-section">
+              <h3>Experience</h3>
+              <div data-experience></div>
+            </div>
+            <div class="editor-section">
+              <h3>Projects</h3>
+              <div data-projects></div>
+            </div>
+          </div>
+
+          <div data-log class="log"></div>
+        </div>
+
+        <div class="panel-right">
+          <iframe data-preview class="pdf-preview" title="Resume preview"></iframe>
+          <div class="preview-empty" data-preview-empty>
+            <p>Paste a Company and JD on the left, then click <strong>Generate</strong>.</p>
+            <p class="muted">Each tab is independent; multiple tabs can run in parallel.</p>
+          </div>
+        </div>
+      </section>
+    </template>
+
+    <script src="/app.js" defer></script>
+  </body>
+</html>
