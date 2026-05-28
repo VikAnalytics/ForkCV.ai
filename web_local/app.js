@@ -13,6 +13,10 @@ const API = {
   outreachDiscover: '/api/outreach/discover',
   outreachReveal: '/api/outreach/reveal',
   outreach: '/api/outreach',
+  preferences: '/api/preferences',
+  discoveryRun: '/api/discovery/run',
+  discoveryStatus: '/api/discovery/status',
+  discoveryJobs: '/api/discovery/jobs',
 };
 
 const APPLIED_STATUSES = [
@@ -55,9 +59,130 @@ function jobKey(job) { return job.url || (job.genId ? `gen:${job.genId}` : ''); 
   wireBulkUI();
   wireMasterDrawer();
   wireAppliedDrawer();
+  wirePrefsDrawer();
+  wireDiscoveredDrawer();
+  wireRail();
+  wireSettingsTabs();
+  wireCuratedView();
   await hydrateHistory();
   refreshAppliedCount();
+  refreshDiscoveredCount();
+  refreshDiscoveryRunStatusPill();
+  loadSheetsStatus();
+  loadDiscoveryBackendStatus();
 })();
+
+// ─── Rail / view router ─────────────────────────────────────────────
+const VIEWS = ['compose', 'discovered', 'curated', 'applied', 'master', 'settings'];
+let activeView = 'compose';
+
+function wireRail() {
+  document.querySelectorAll('.rail-btn').forEach((btn) => {
+    btn.addEventListener('click', () => switchView(btn.dataset.view));
+  });
+  document.addEventListener('keydown', (e) => {
+    if (!(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey) return;
+    const idx = parseInt(e.key, 10);
+    if (idx >= 1 && idx <= VIEWS.length) {
+      e.preventDefault();
+      switchView(VIEWS[idx - 1]);
+    }
+  });
+}
+
+function switchView(viewId) {
+  if (!VIEWS.includes(viewId) || viewId === activeView) return;
+  if (activeView === 'master') leaveMasterView();
+
+  document.querySelectorAll('.rail-btn').forEach((b) => b.classList.toggle('active', b.dataset.view === viewId));
+  document.querySelectorAll('.view').forEach((v) => v.classList.toggle('active', v.id === `view-${viewId}`));
+  activeView = viewId;
+
+  if (viewId === 'master') enterMasterView();
+  if (viewId === 'discovered') enterDiscoveredView();
+  if (viewId === 'curated') enterCuratedView();
+  if (viewId === 'applied') enterAppliedView();
+  if (viewId === 'settings') enterSettingsView();
+}
+
+function wireSettingsTabs() {
+  document.querySelectorAll('.settings-tab').forEach((tab) => {
+    tab.addEventListener('click', () => {
+      const section = tab.dataset.settingsSection;
+      document.querySelectorAll('.settings-tab').forEach((t) => t.classList.toggle('active', t === tab));
+      document.querySelectorAll('.settings-section').forEach((s) => s.classList.toggle('active', s.id === `settings-${section}`));
+    });
+  });
+}
+
+function refreshDiscoveryRunStatusPill() {
+  const el = document.getElementById('discoveryRunStatusPill');
+  if (!el) return;
+  fetch(API.discoveryStatus)
+    .then((r) => (r.ok ? r.text() : ''))
+    .then((txt) => {
+      if (!txt || txt === 'null') { el.textContent = ''; return; }
+      try {
+        const rec = JSON.parse(txt);
+        if (rec.finished_at) {
+          el.textContent = `last run: ${shortDate(rec.finished_at)}`;
+          el.className = 'status-pill ok';
+        } else {
+          el.textContent = 'discovery running…';
+          el.className = 'status-pill';
+        }
+      } catch { el.textContent = ''; }
+    })
+    .catch(() => {});
+}
+
+async function loadSheetsStatus() {
+  const el = document.getElementById('sheetsStatusBox');
+  if (!el) return;
+  try {
+    const r = await fetch('/api/sheets/status');
+    if (!r.ok) { el.textContent = 'not configured'; return; }
+    const d = await r.json();
+    if (d.configured) {
+      el.innerHTML = `✓ configured · mode: <code>${d.auth_mode}</code> · sheet: <a target="_blank" rel="noopener" href="https://docs.google.com/spreadsheets/d/${d.spreadsheet_id}">open</a>`;
+    } else {
+      el.textContent = 'not configured — set SHEETS_SPREADSHEET_ID in .env.local and run scripts/sheets_oauth.py';
+    }
+  } catch { el.textContent = 'check failed'; }
+}
+
+async function loadDiscoveryBackendStatus() {
+  const el = document.getElementById('discoveryBackendBox');
+  if (!el) return;
+  el.innerHTML = `Backend selected by <code>DISCOVERY_BACKEND</code> env (<code>jobspy</code> default, <code>apify</code> opt-in). Free + reliable: Jobspy. Paid: Apify actor like <code>curious_coder~linkedin-jobs-scraper</code>.`;
+}
+
+// View-switch enter/leave helpers — these just trigger the existing render funcs
+// that previously fired on drawer-open. No new logic.
+function enterDiscoveredView() {
+  refreshDiscoveredCount().then(renderDiscoveredList);
+  refreshDiscoveryRunStatus();
+}
+function enterAppliedView() { refreshAppliedCount().then(renderAppliedDrawer); }
+function enterCuratedView() { refreshDiscoveredCount().then(renderCuratedList); }
+function enterMasterView() {
+  if (!masterCV) return;
+  masterDraft = JSON.parse(JSON.stringify(masterCV));
+  renderMasterDrawer();
+}
+function leaveMasterView() {
+  masterDraft = null;
+  setMasterDrawerStatus('');
+}
+async function enterSettingsView() {
+  try {
+    const r = await fetch(API.preferences);
+    prefsDraft = r.ok ? await r.json() : {};
+  } catch { prefsDraft = {}; }
+  renderPrefsDrawer();
+  loadSheetsStatus();
+  loadDiscoveryBackendStatus();
+}
 
 function createTab(initial = {}) {
   tabCounter += 1;
@@ -73,6 +198,7 @@ function createTab(initial = {}) {
     bulkUrl: initial.bulkUrl || null,
     generationId: initial.generationId || null,
     appliedId: null,
+    useRac: !!initial.useRac,
   };
   tabs.set(id, state);
 
@@ -164,6 +290,12 @@ function wirePanel(panel, state) {
   });
   jdEl.addEventListener('input', () => { state.jd = jdEl.value; syncTabMetaToBulk(state); });
 
+  const racToggle = panel.querySelector('[data-use-rac]');
+  if (racToggle) {
+    racToggle.checked = !!state.useRac;
+    racToggle.addEventListener('change', () => { state.useRac = racToggle.checked; });
+  }
+
   generateBtn.addEventListener('click', async () => {
     const company = state.company.trim();
     const jd = state.jd.trim();
@@ -175,7 +307,7 @@ function wirePanel(panel, state) {
     try {
       // rewrite_summary is intentionally false — summary text is locked in master_cv_bank.json.
       const source_url = state.bulkUrl || null;
-      const data = await postJSON(API.tailor, { company, jd, source_url, rewrite_summary: false, enrich_skills: true });
+      const data = await postJSON(API.tailor, { company, jd, source_url, rewrite_summary: false, enrich_skills: true, use_rac: !!state.useRac });
       state.cv = data.cv;
       state.report = data.report;
       state.pdfFilename = data.download_filename;
@@ -751,11 +883,13 @@ async function generateAll() {
       job.status = 'running';
       renderBulkRow(job);
       try {
+        const useRac = !!document.getElementById('bulkUseRac')?.checked;
         const data = await postJSON(API.tailor, {
           company: job.company || _companyFallback(job.url),
           jd: job.jd,
           rewrite_summary: false,
           enrich_skills: true,
+          use_rac: useRac,
         });
         job.cv = data.cv;
         job.report = data.report;
@@ -875,33 +1009,37 @@ function syncTabMetaToBulk(state) {
 let masterDraft = null;
 
 function wireMasterDrawer() {
-  document.getElementById('editMasterBtn').addEventListener('click', openMasterDrawer);
-  document.getElementById('masterCloseBtn').addEventListener('click', closeMasterDrawer);
-  document.getElementById('masterBackdrop').addEventListener('click', closeMasterDrawer);
-  document.getElementById('masterSaveBtn').addEventListener('click', saveMasterDraft);
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && !document.getElementById('masterDrawer').classList.contains('hidden')) {
-      closeMasterDrawer();
-    }
-  });
+  // Save + Generate-RAC live in the new view-header; everything else moved to the rail.
+  const saveBtn = document.getElementById('masterSaveBtn');
+  if (saveBtn) saveBtn.addEventListener('click', saveMasterDraft);
+  const racBtn = document.getElementById('masterRacBtn');
+  if (racBtn) racBtn.addEventListener('click', generateMasterRac);
 }
 
-function openMasterDrawer() {
-  if (!masterCV) return;
-  masterDraft = JSON.parse(JSON.stringify(masterCV));
-  renderMasterDrawer();
-  document.getElementById('masterBackdrop').classList.remove('hidden');
-  document.getElementById('masterDrawer').classList.remove('hidden');
-  document.getElementById('masterDrawer').setAttribute('aria-hidden', 'false');
+async function generateMasterRac() {
+  const btn = document.getElementById('masterRacBtn');
+  btn.disabled = true;
+  setMasterDrawerStatus('Generating RAC variants (≈10-30s per bullet, capped 4 concurrent)…');
+  try {
+    const r = await fetch('/api/master/generate-rac', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ only_missing: true }),
+    });
+    if (!r.ok) throw new Error(`${r.status}`);
+    masterCV = await r.json();
+    masterDraft = JSON.parse(JSON.stringify(masterCV));
+    renderMasterDrawer();
+    setMasterDrawerStatus('RAC variants generated.', 'ok');
+  } catch (e) {
+    setMasterDrawerStatus(`RAC generation failed: ${e.message}`, 'err');
+  } finally {
+    btn.disabled = false;
+  }
 }
 
-function closeMasterDrawer() {
-  document.getElementById('masterBackdrop').classList.add('hidden');
-  document.getElementById('masterDrawer').classList.add('hidden');
-  document.getElementById('masterDrawer').setAttribute('aria-hidden', 'true');
-  masterDraft = null;
-  setMasterDrawerStatus('');
-}
+function openMasterDrawer() { switchView('master'); }
+function closeMasterDrawer() { /* no-op — view persists; leaveMasterView() handles cleanup */ }
 
 function setMasterDrawerStatus(msg, klass = '') {
   const el = document.getElementById('masterDrawerStatus');
@@ -1015,20 +1153,36 @@ function renderMasterExperience() {
       block.querySelector('[data-loc]').addEventListener('input', (ev) => { masterDraft.experience[ei].location = ev.target.value; });
 
       const bulletsEl = block.querySelector('[data-bullets]');
+      // Header row labeling the two columns
+      const head = document.createElement('div');
+      head.className = 'master-bullet-row master-bullet-head';
+      head.innerHTML = `
+        <span class="master-bullet-idx"></span>
+        <div class="master-bullet-col-head">Original (Action · Context · Result)</div>
+        <div class="master-bullet-col-head">RAC (Result · Action · Context)</div>
+        <span></span>
+      `;
+      bulletsEl.appendChild(head);
+
       function redrawBullets() {
-        bulletsEl.innerHTML = '';
+        // Wipe everything below the header.
+        while (bulletsEl.children.length > 1) bulletsEl.removeChild(bulletsEl.lastChild);
         const pool = e.bullet_pool || [];
         pool.forEach((b, bi) => {
           const row = document.createElement('div');
           row.className = 'master-bullet-row';
           row.innerHTML = `
             <span class="master-bullet-idx">${bi + 1}</span>
-            <textarea class="master-textarea" rows="2"></textarea>
+            <textarea class="master-textarea" data-col="src" rows="2"></textarea>
+            <textarea class="master-textarea master-textarea-rac" data-col="rac" rows="2" placeholder="(empty — click 'Generate RAC for missing' in the header)"></textarea>
             <button class="btn-link master-del" title="Delete">×</button>
           `;
-          const ta = row.querySelector('textarea');
-          ta.value = b.text || '';
-          ta.addEventListener('input', () => { masterDraft.experience[ei].bullet_pool[bi].text = ta.value; });
+          const srcTa = row.querySelector('[data-col=src]');
+          const racTa = row.querySelector('[data-col=rac]');
+          srcTa.value = b.text || '';
+          racTa.value = b.text_rac || '';
+          srcTa.addEventListener('input', () => { masterDraft.experience[ei].bullet_pool[bi].text = srcTa.value; });
+          racTa.addEventListener('input', () => { masterDraft.experience[ei].bullet_pool[bi].text_rac = racTa.value; });
           row.querySelector('.master-del').addEventListener('click', () => {
             masterDraft.experience[ei].bullet_pool.splice(bi, 1);
             redrawBullets();
@@ -1094,20 +1248,34 @@ function renderMasterProjects() {
       block.querySelector('[data-loc]').addEventListener('input', (ev) => { masterDraft.projects[pi].location = ev.target.value; });
 
       const bulletsEl = block.querySelector('[data-bullets]');
+      const head = document.createElement('div');
+      head.className = 'master-bullet-row master-bullet-head';
+      head.innerHTML = `
+        <span class="master-bullet-idx"></span>
+        <div class="master-bullet-col-head">Original (Action · Context · Result)</div>
+        <div class="master-bullet-col-head">RAC (Result · Action · Context)</div>
+        <span></span>
+      `;
+      bulletsEl.appendChild(head);
+
       function redrawBullets() {
-        bulletsEl.innerHTML = '';
+        while (bulletsEl.children.length > 1) bulletsEl.removeChild(bulletsEl.lastChild);
         p.bullet_pool = p.bullet_pool || [];
         p.bullet_pool.forEach((b, bi) => {
           const row = document.createElement('div');
           row.className = 'master-bullet-row';
           row.innerHTML = `
             <span class="master-bullet-idx">${bi + 1}</span>
-            <textarea class="master-textarea" rows="2"></textarea>
+            <textarea class="master-textarea" data-col="src" rows="2"></textarea>
+            <textarea class="master-textarea master-textarea-rac" data-col="rac" rows="2" placeholder="(empty — click 'Generate RAC for missing' in the header)"></textarea>
             <button class="btn-link master-del" title="Delete">×</button>
           `;
-          const ta = row.querySelector('textarea');
-          ta.value = b.text || '';
-          ta.addEventListener('input', () => { masterDraft.projects[pi].bullet_pool[bi].text = ta.value; });
+          const srcTa = row.querySelector('[data-col=src]');
+          const racTa = row.querySelector('[data-col=rac]');
+          srcTa.value = b.text || '';
+          racTa.value = b.text_rac || '';
+          srcTa.addEventListener('input', () => { masterDraft.projects[pi].bullet_pool[bi].text = srcTa.value; });
+          racTa.addEventListener('input', () => { masterDraft.projects[pi].bullet_pool[bi].text_rac = racTa.value; });
           row.querySelector('.master-del').addEventListener('click', () => {
             masterDraft.projects[pi].bullet_pool.splice(bi, 1);
             redrawBullets();
@@ -1432,8 +1600,11 @@ async function refreshAppliedCount() {
     const r = await fetch(API.applied);
     if (!r.ok) return;
     appliedRecords = await r.json();
-    const btn = document.getElementById('openAppliedBtn');
-    if (btn) btn.textContent = `Applied jobs (${appliedRecords.length})`;
+    const badge = document.getElementById('railAppliedBadge');
+    if (badge) {
+      badge.textContent = appliedRecords.length;
+      badge.classList.toggle('hidden', appliedRecords.length === 0);
+    }
     // Mark tabs whose generationId matches an applied record
     const byGen = new Map(appliedRecords.filter((a) => a.generation_id).map((a) => [a.generation_id, a.id]));
     for (const [, state] of tabs) {
@@ -1446,27 +1617,9 @@ async function refreshAppliedCount() {
   } catch {}
 }
 
-function wireAppliedDrawer() {
-  document.getElementById('openAppliedBtn').addEventListener('click', openAppliedDrawer);
-  document.getElementById('appliedBackdrop').addEventListener('click', closeAppliedDrawer);
-  document.getElementById('appliedCloseBtn').addEventListener('click', closeAppliedDrawer);
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && !document.getElementById('appliedDrawer').classList.contains('hidden')) {
-      closeAppliedDrawer();
-    }
-  });
-}
-
-async function openAppliedDrawer() {
-  await refreshAppliedCount();
-  renderAppliedDrawer();
-  document.getElementById('appliedBackdrop').classList.remove('hidden');
-  document.getElementById('appliedDrawer').classList.remove('hidden');
-}
-function closeAppliedDrawer() {
-  document.getElementById('appliedBackdrop').classList.add('hidden');
-  document.getElementById('appliedDrawer').classList.add('hidden');
-}
+function wireAppliedDrawer() { /* now wired via rail; view enter hook handles refresh */ }
+function openAppliedDrawer() { switchView('applied'); }
+function closeAppliedDrawer() { /* no-op */ }
 
 function renderAppliedDrawer() {
   const body = document.getElementById('appliedDrawerBody');
@@ -1627,4 +1780,557 @@ async function saveMasterDraft() {
   } finally {
     saveBtn.disabled = false;
   }
+}
+
+// ─── Preferences drawer ────────────────────────────────────────────────
+let prefsDraft = null;
+
+function wirePrefsDrawer() {
+  const saveBtn = document.getElementById('prefsSaveBtn');
+  if (saveBtn) saveBtn.addEventListener('click', savePrefs);
+}
+
+function openPrefsDrawer() { switchView('settings'); }
+function closePrefsDrawer() { /* no-op */ }
+
+function setPrefsStatus(msg, klass = '') {
+  const el = document.getElementById('prefsStatus');
+  el.textContent = msg;
+  el.className = 'muted' + (klass ? ` ${klass}` : '');
+}
+
+function renderPrefsDrawer() {
+  const body = document.getElementById('prefsDrawerBody');
+  const p = prefsDraft || {};
+  body.innerHTML = `
+    <section class="master-section"><h3>Target roles</h3>
+      <textarea class="master-textarea" id="pf_roles" rows="2" placeholder="One per line. e.g. Data Engineer&#10;Analytics Engineer"></textarea>
+    </section>
+    <section class="master-section"><h3>Locations</h3>
+      <textarea class="master-textarea" id="pf_locations" rows="2" placeholder="United States&#10;Remote"></textarea>
+      <label class="muted"><input type="checkbox" id="pf_remote_ok"> Include remote jobs</label>
+    </section>
+    <section class="master-section"><h3>Hard filters</h3>
+      <label class="muted"><input type="checkbox" id="pf_visa"> I need visa sponsorship (reject jobs explicitly saying no)</label>
+      <div class="master-grid-2" style="margin-top:0.4rem;">
+        <label>Languages I speak<input class="master-input" id="pf_my_langs" placeholder="English, Spanish" /></label>
+        <label>Max required YoE<input class="master-input" id="pf_max_yoe" type="number" min="0" max="30" placeholder="e.g. 7" /></label>
+      </div>
+      <div class="master-grid-2" style="margin-top:0.4rem;">
+        <label>Min salary (USD)<input class="master-input" id="pf_salary_min" type="number" placeholder="e.g. 120000" /></label>
+        <label>Posted within (days)<input class="master-input" id="pf_post_age" type="number" min="1" max="30" /></label>
+      </div>
+    </section>
+    <section class="master-section"><h3>Keywords</h3>
+      <label>Must contain at least one of (OR)<textarea class="master-textarea" id="pf_kw_inc" rows="2" placeholder="Python, Spark, dbt"></textarea></label>
+      <label>Exclude if any present<textarea class="master-textarea" id="pf_kw_exc" rows="2" placeholder="contract, intern, junior"></textarea></label>
+    </section>
+    <section class="master-section"><h3>Companies</h3>
+      <label>Boost (substring match)<textarea class="master-textarea" id="pf_co_inc" rows="2" placeholder="Stripe&#10;Anthropic"></textarea></label>
+      <label>Block<textarea class="master-textarea" id="pf_co_exc" rows="2" placeholder="ACME Corp"></textarea></label>
+    </section>
+    <section class="master-section"><h3>Auto-generate resumes</h3>
+      <div class="master-grid-2">
+        <label>Top N per run<input class="master-input" id="pf_autogen_n" type="number" min="0" max="20" /></label>
+        <label>Min score threshold (0-100)<input class="master-input" id="pf_min_score" type="number" min="0" max="100" /></label>
+      </div>
+    </section>
+  `;
+  const csv = (arr) => (arr || []).join(', ');
+  const nl = (arr) => (arr || []).join('\n');
+  body.querySelector('#pf_roles').value = nl(p.roles);
+  body.querySelector('#pf_locations').value = nl(p.locations);
+  body.querySelector('#pf_remote_ok').checked = !!p.remote_ok;
+  body.querySelector('#pf_visa').checked = !!p.visa_sponsorship_needed;
+  body.querySelector('#pf_my_langs').value = csv(p.my_languages || ['English']);
+  body.querySelector('#pf_max_yoe').value = p.max_required_yoe ?? '';
+  body.querySelector('#pf_salary_min').value = p.salary_min_usd ?? '';
+  body.querySelector('#pf_post_age').value = p.post_age_days_max ?? 7;
+  body.querySelector('#pf_kw_inc').value = csv(p.keywords_include);
+  body.querySelector('#pf_kw_exc').value = csv(p.keywords_exclude);
+  body.querySelector('#pf_co_inc').value = nl(p.companies_include);
+  body.querySelector('#pf_co_exc').value = nl(p.companies_exclude);
+  body.querySelector('#pf_autogen_n').value = p.autogen_top_n ?? 5;
+  body.querySelector('#pf_min_score').value = p.autogen_min_score ?? 70;
+}
+
+async function savePrefs() {
+  const $ = (id) => document.getElementById(id);
+  const lines = (id) => $(id).value.split('\n').map(s => s.trim()).filter(Boolean);
+  const csv = (id) => $(id).value.split(',').map(s => s.trim()).filter(Boolean);
+  const intOrNull = (id) => { const v = $(id).value.trim(); return v ? parseInt(v, 10) : null; };
+  const payload = {
+    roles: lines('pf_roles'),
+    locations: lines('pf_locations'),
+    remote_ok: $('pf_remote_ok').checked,
+    visa_sponsorship_needed: $('pf_visa').checked,
+    my_languages: csv('pf_my_langs').length ? csv('pf_my_langs') : ['English'],
+    max_required_yoe: intOrNull('pf_max_yoe'),
+    salary_min_usd: intOrNull('pf_salary_min'),
+    post_age_days_max: parseInt($('pf_post_age').value || '7', 10),
+    keywords_include: csv('pf_kw_inc'),
+    keywords_exclude: csv('pf_kw_exc'),
+    companies_include: lines('pf_co_inc'),
+    companies_exclude: lines('pf_co_exc'),
+    autogen_top_n: parseInt($('pf_autogen_n').value || '5', 10),
+    autogen_min_score: parseInt($('pf_min_score').value || '70', 10),
+  };
+  setPrefsStatus('Saving…');
+  try {
+    const r = await fetch(API.preferences, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!r.ok) throw new Error(`${r.status}`);
+    setPrefsStatus('Saved.', 'ok');
+    setTimeout(closePrefsDrawer, 500);
+  } catch (e) {
+    setPrefsStatus(`Save failed: ${e.message}`, 'err');
+  }
+}
+
+// ─── Discovered-jobs drawer ────────────────────────────────────────────
+let discoveredJobs = [];
+let discoveryPollTimer = null;
+
+function wireDiscoveredDrawer() {
+  // Keep the in-view widgets wired; open/close handled by the rail router.
+  document.getElementById('discoveryRunBtn').addEventListener('click', runDiscovery);
+  document.getElementById('discoveredFilter').addEventListener('input', () => renderDiscoveredList());
+  document.getElementById('discoveredHideRejected').addEventListener('change', () => renderDiscoveredList());
+  document.getElementById('discoveredHideApplied').addEventListener('change', () => renderDiscoveredList());
+}
+
+async function refreshDiscoveredCount() {
+  try {
+    const r = await fetch(API.discoveryJobs);
+    if (!r.ok) return;
+    const items = await r.json();
+    discoveredJobs = items;
+    const visible = items.filter(j => !j.applied && !j.rejected).length;
+    const badge = document.getElementById('railDiscoveredBadge');
+    if (badge) {
+      badge.textContent = visible;
+      badge.classList.toggle('hidden', visible === 0);
+    }
+    const curatedCount = items.filter(j => !j.rejected).length;
+    const cBadge = document.getElementById('railCuratedBadge');
+    if (cBadge) {
+      cBadge.textContent = curatedCount;
+      cBadge.classList.toggle('hidden', curatedCount === 0);
+    }
+  } catch {}
+}
+
+function openDiscoveredDrawer() { switchView('discovered'); }
+function closeDiscoveredDrawer() { /* no-op */ }
+
+async function refreshDiscoveryRunStatus() {
+  try {
+    const r = await fetch(API.discoveryStatus);
+    if (!r.ok) return;
+    const txt = await r.text();
+    const rec = (!txt || txt === 'null') ? null : JSON.parse(txt);
+    const el = document.getElementById('discoveredRunStatus');
+    const btn = document.getElementById('discoveryRunBtn');
+    if (!rec) { el.textContent = ''; btn.disabled = false; return; }
+    const running = rec.finished_at == null;
+    if (running) {
+      el.textContent = `Running… (started ${shortDate(rec.started_at)})`;
+      btn.disabled = true;
+      if (!discoveryPollTimer) discoveryPollTimer = setInterval(refreshDiscoveryRunStatus, 5000);
+    } else {
+      if (discoveryPollTimer) { clearInterval(discoveryPollTimer); discoveryPollTimer = null; }
+      btn.disabled = false;
+      const e = rec.error ? ` · ⚠ ${rec.error}` : '';
+      el.textContent = `Last run ${shortDate(rec.finished_at)} · ${rec.added} added, ${rec.dup_skipped} dup, ${rec.rejected} filtered, ${rec.autogen_count} auto-tailored${e}`;
+      // Refresh the list now that the run finished.
+      refreshDiscoveredCount().then(renderDiscoveredList);
+    }
+  } catch {}
+}
+
+async function runDiscovery() {
+  const btn = document.getElementById('discoveryRunBtn');
+  btn.disabled = true;
+  try {
+    const r = await fetch(API.discoveryRun, { method: 'POST' });
+    if (!r.ok) {
+      let msg = `${r.status}`;
+      try { const j = await r.json(); if (j.detail) msg += `: ${j.detail}`; } catch {}
+      throw new Error(msg);
+    }
+    refreshDiscoveryRunStatus();
+  } catch (e) {
+    document.getElementById('discoveredRunStatus').textContent = `Failed: ${e.message}`;
+    btn.disabled = false;
+  }
+}
+
+function renderDiscoveredList() {
+  const filter = (document.getElementById('discoveredFilter').value || '').toLowerCase();
+  const hideRejected = document.getElementById('discoveredHideRejected').checked;
+  const hideApplied = document.getElementById('discoveredHideApplied').checked;
+  const list = document.getElementById('discoveredList');
+  list.innerHTML = '';
+  let shown = 0;
+  for (const j of discoveredJobs) {
+    if (hideRejected && j.rejected) continue;
+    if (hideApplied && j.applied) continue;
+    if (filter) {
+      const blob = `${j.company} ${j.title}`.toLowerCase();
+      if (!blob.includes(filter)) continue;
+    }
+    list.appendChild(buildDiscoveredCard(j));
+    shown++;
+  }
+  document.getElementById('discoveredCount').textContent = `${shown} of ${discoveredJobs.length}`;
+}
+
+function buildDiscoveredCard(j) {
+  const card = document.createElement('div');
+  card.className = 'discovered-card' + (j.rejected ? ' is-rejected' : '') + (j.applied ? ' is-applied' : '');
+  const sponsorClass = ({
+    available: 'ok', not_available: 'err', mentioned: 'warn', unspecified: 'muted'
+  })[j.sponsorship_status] || 'muted';
+  card.innerHTML = `
+    <div class="discovered-head">
+      <div class="discovered-titles">
+        <div class="discovered-title"></div>
+        <div class="discovered-company muted"></div>
+      </div>
+      <div class="discovered-score-wrap">
+        <span class="discovered-score"></span>
+      </div>
+    </div>
+    <div class="discovered-meta muted"></div>
+    <div class="discovered-pills">
+      <span class="pill sponsor-pill"></span>
+      <span class="pill yoe-pill hidden"></span>
+      <span class="pill lang-pill hidden"></span>
+      <span class="pill salary-pill hidden"></span>
+      <span class="pill posted-pill hidden"></span>
+    </div>
+    <div class="discovered-actions">
+      <a class="btn btn-ghost discovered-link" target="_blank" rel="noopener noreferrer">Open posting ↗</a>
+      <button class="btn btn-primary discovered-tailor">Generate resume</button>
+      <button class="btn discovered-mark-applied">Mark applied</button>
+      <button class="btn-link discovered-delete">delete</button>
+      <span class="discovered-status muted"></span>
+    </div>
+    <div class="discovered-rejection muted hidden"></div>
+  `;
+  card.querySelector('.discovered-title').textContent = j.title || '(no title)';
+  card.querySelector('.discovered-company').textContent = j.company || '(no company)';
+  const meta = [j.location, j.posted_at].filter(Boolean).join(' · ');
+  card.querySelector('.discovered-meta').textContent = meta;
+  card.querySelector('.discovered-score').textContent = `${j.score}/100`;
+
+  const sp = card.querySelector('.sponsor-pill');
+  sp.className = `pill sponsor-pill ${sponsorClass}`;
+  sp.textContent = `visa: ${j.sponsorship_status || 'unspecified'}`;
+
+  if (j.yoe_required != null) {
+    const e = card.querySelector('.yoe-pill');
+    e.classList.remove('hidden');
+    e.textContent = `${j.yoe_required}+ YoE`;
+  }
+  if ((j.languages_required || []).length) {
+    const e = card.querySelector('.lang-pill');
+    e.classList.remove('hidden');
+    e.textContent = `lang: ${(j.languages_required || []).join(', ')}`;
+  }
+  if (j.salary) {
+    const e = card.querySelector('.salary-pill');
+    e.classList.remove('hidden');
+    e.textContent = j.salary;
+  }
+  if (j.posted_at) {
+    const e = card.querySelector('.posted-pill');
+    e.classList.remove('hidden');
+    e.textContent = j.posted_at;
+  }
+
+  const linkEl = card.querySelector('.discovered-link');
+  if (j.application_link) {
+    linkEl.href = j.application_link;
+  } else {
+    linkEl.classList.add('hidden');
+  }
+
+  if (j.rejected) {
+    const r = card.querySelector('.discovered-rejection');
+    r.classList.remove('hidden');
+    r.textContent = `Rejected by filter: ${j.rejection_reason}`;
+  }
+
+  const tailorBtn = card.querySelector('.discovered-tailor');
+  if (j.generation_id) {
+    tailorBtn.textContent = 'Open resume';
+    tailorBtn.classList.add('btn-success');
+    tailorBtn.addEventListener('click', () => openGenerationInTab(j.generation_id, j.application_link));
+  } else {
+    tailorBtn.addEventListener('click', () => tailorDiscoveredJob(j, card));
+  }
+
+  const appliedBtn = card.querySelector('.discovered-mark-applied');
+  if (j.applied) {
+    appliedBtn.textContent = '✓ Applied';
+    appliedBtn.classList.add('btn-success');
+    appliedBtn.disabled = true;
+  } else {
+    appliedBtn.addEventListener('click', () => markDiscoveredApplied(j, card));
+  }
+
+  card.querySelector('.discovered-delete').addEventListener('click', async () => {
+    if (!confirm(`Remove this job from your discovered list?`)) return;
+    await fetch(`${API.discoveryJobs}/${j.id}`, { method: 'DELETE' });
+    discoveredJobs = discoveredJobs.filter(x => x.id !== j.id);
+    renderDiscoveredList();
+    refreshDiscoveredCount();
+  });
+
+  return card;
+}
+
+async function tailorDiscoveredJob(job, card) {
+  const btn = card.querySelector('.discovered-tailor');
+  const status = card.querySelector('.discovered-status');
+  btn.disabled = true;
+  status.textContent = 'Tailoring (≈30s)…';
+  try {
+    const r = await fetch(API.tailor, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        company: job.company || 'Company',
+        jd: job.description,
+        source_url: job.application_link || null,
+        rewrite_summary: false,
+        enrich_skills: true,
+        use_rac: !!document.getElementById('bulkUseRac')?.checked,
+      }),
+    });
+    if (!r.ok) throw new Error(`${r.status}`);
+    const data = await r.json();
+    await fetch(`${API.discoveryJobs}/${job.id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ generation_id: data.generation_id }),
+    });
+    status.textContent = `Generated ✓ (${data.download_filename})`;
+    job.generation_id = data.generation_id;
+    btn.textContent = 'Open resume';
+    btn.classList.add('btn-success');
+    btn.disabled = false;
+    btn.onclick = () => openGenerationInTab(data.generation_id, job.application_link);
+  } catch (e) {
+    status.textContent = `Failed: ${e.message}`;
+    btn.disabled = false;
+  }
+}
+
+async function markDiscoveredApplied(job, card) {
+  const today = new Date().toISOString().slice(0, 10);
+  try {
+    const r = await fetch(API.applied, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        company: job.company || 'Untitled',
+        job_title: job.title || '',
+        job_link: job.application_link || '',
+        applied_at: today,
+        status: 'applied',
+        notes: '',
+        generation_id: job.generation_id || null,
+      }),
+    });
+    if (!r.ok) throw new Error(`${r.status}`);
+    const appRec = await r.json();
+    await fetch(`${API.discoveryJobs}/${job.id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ applied: true, applied_id: appRec.id }),
+    });
+    job.applied = true;
+    job.applied_id = appRec.id;
+    renderDiscoveredList();
+    refreshDiscoveredCount();
+    refreshAppliedCount();
+  } catch (e) {
+    card.querySelector('.discovered-status').textContent = `Failed: ${e.message}`;
+  }
+}
+
+async function openGenerationInTab(genId, sourceUrl) {
+  if (!genId) return;
+  // Reuse the bulk-job system: insert/lookup, then call openBulkJob.
+  const key = sourceUrl || `gen:${genId}`;
+  if (!bulkJobs.has(key)) {
+    bulkJobs.set(key, {
+      url: sourceUrl || '',
+      genId,
+      company: '',
+      jd: '',
+      cv: null,
+      pdfBase64: null,
+      pdfFilename: '',
+      report: null,
+      status: 'done',
+      error: null,
+      createdAt: '',
+      applied: false,
+    });
+    document.getElementById('bulkSidebar').classList.remove('hidden');
+    renderBulkList();
+  }
+  closeDiscoveredDrawer();
+  await openBulkJob(key);
+}
+
+
+// ─── Curated view ──────────────────────────────────────────────────────
+const curatedSelection = new Set();   // job.id of selected rows
+
+function wireCuratedView() {
+  const filter = document.getElementById('curatedFilter');
+  if (!filter) return;
+  filter.addEventListener('input', renderCuratedList);
+  document.getElementById('curatedHideApplied').addEventListener('change', renderCuratedList);
+  document.getElementById('curatedRegionFilter').addEventListener('change', renderCuratedList);
+  document.getElementById('curatedSelectAll').addEventListener('change', () => {
+    const visible = visibleCuratedJobs();
+    const sel = document.getElementById('curatedSelectAll');
+    if (sel.checked) visible.forEach((j) => curatedSelection.add(j.id));
+    else visible.forEach((j) => curatedSelection.delete(j.id));
+    renderCuratedList();
+  });
+  document.getElementById('curatedAddToBulkBtn').addEventListener('click', addCuratedToBulk);
+}
+
+function classifyRegion(loc) {
+  // Mirrors src/sheets_sync.py — keep simple, just enough to filter.
+  const s = (loc || '').toLowerCase();
+  if (!s) return 'Other';
+  if (/(united kingdom|london|manchester|england|scotland|wales|\buk\b)/i.test(s)) return 'UK';
+  if (/(uae|dubai|abu dhabi)/i.test(s)) return 'UAE';
+  if (/(australia|new zealand|\baus\b|\bnz\b|sydney|melbourne|auckland)/i.test(s)) return 'Australia & NZ';
+  if (/(united states|\busa?\b|new york|california|texas|florida|illinois)/i.test(s)) return 'US';
+  if (/(europe|germany|france|spain|italy|netherlands|berlin|paris|amsterdam|dublin)/i.test(s)) return 'Europe';
+  return 'Other';
+}
+
+function visibleCuratedJobs() {
+  const filter = (document.getElementById('curatedFilter')?.value || '').toLowerCase();
+  const hideApplied = !!document.getElementById('curatedHideApplied')?.checked;
+  const region = document.getElementById('curatedRegionFilter')?.value || '';
+  return (discoveredJobs || []).filter((j) => {
+    if (j.rejected) return false;
+    if (hideApplied && j.applied) return false;
+    if (filter && !`${j.company} ${j.title} ${j.location}`.toLowerCase().includes(filter)) return false;
+    if (region && classifyRegion(j.location) !== region) return false;
+    return true;
+  });
+}
+
+function renderCuratedList() {
+  const list = document.getElementById('curatedList');
+  if (!list) return;
+  list.innerHTML = '';
+  const visible = visibleCuratedJobs();
+  visible.forEach((j) => list.appendChild(buildCuratedCard(j)));
+  document.getElementById('curatedCount').textContent = `${visible.length} of ${(discoveredJobs || []).filter((j) => !j.rejected).length}`;
+  // Sync select-all checkbox state
+  const sel = document.getElementById('curatedSelectAll');
+  if (sel) {
+    sel.checked = visible.length > 0 && visible.every((j) => curatedSelection.has(j.id));
+  }
+  updateCuratedAddBtn();
+}
+
+function updateCuratedAddBtn() {
+  const btn = document.getElementById('curatedAddToBulkBtn');
+  if (!btn) return;
+  const count = curatedSelection.size;
+  btn.textContent = `Add ${count} to bulk import`;
+  btn.disabled = count === 0;
+}
+
+function buildCuratedCard(j) {
+  const card = document.createElement('div');
+  card.className = 'discovered-card curated-card' + (j.applied ? ' is-applied' : '');
+  const region = classifyRegion(j.location);
+  card.innerHTML = `
+    <div class="curated-head">
+      <input type="checkbox" class="curated-check" />
+      <div class="discovered-titles">
+        <div class="discovered-title"></div>
+        <div class="discovered-company muted"></div>
+      </div>
+      <div class="discovered-score-wrap">
+        <span class="pill region-pill"></span>
+        <span class="discovered-score"></span>
+      </div>
+    </div>
+    <div class="discovered-meta muted"></div>
+    <div class="curated-actions">
+      <a class="btn btn-ghost curated-link" target="_blank" rel="noopener noreferrer">Open ↗</a>
+      <span class="discovered-status muted"></span>
+    </div>
+  `;
+  card.querySelector('.discovered-title').textContent = j.title || '(no title)';
+  card.querySelector('.discovered-company').textContent = j.company || '(no company)';
+  card.querySelector('.region-pill').textContent = region;
+  card.querySelector('.discovered-score').textContent = `${j.score}/100`;
+  card.querySelector('.discovered-meta').textContent = [j.location, j.posted_at, j.salary].filter(Boolean).join(' · ');
+  const linkEl = card.querySelector('.curated-link');
+  if (j.application_link) linkEl.href = j.application_link;
+  else linkEl.classList.add('hidden');
+
+  const check = card.querySelector('.curated-check');
+  check.checked = curatedSelection.has(j.id);
+  check.addEventListener('change', () => {
+    if (check.checked) curatedSelection.add(j.id);
+    else curatedSelection.delete(j.id);
+    updateCuratedAddBtn();
+  });
+  // Also let user click anywhere on the card body (except link) to toggle
+  card.addEventListener('click', (e) => {
+    if (e.target.closest('a, button, input')) return;
+    check.checked = !check.checked;
+    if (check.checked) curatedSelection.add(j.id);
+    else curatedSelection.delete(j.id);
+    updateCuratedAddBtn();
+  });
+  return card;
+}
+
+function addCuratedToBulk() {
+  const selectedIds = Array.from(curatedSelection);
+  if (!selectedIds.length) return;
+  const byId = new Map((discoveredJobs || []).map((j) => [j.id, j]));
+  const urls = selectedIds
+    .map((id) => byId.get(id))
+    .filter((j) => j && j.application_link)
+    .map((j) => j.application_link);
+  if (!urls.length) {
+    alert('Selected jobs have no application_link.');
+    return;
+  }
+  // Switch to Compose, expand bulk panel, append URLs to textarea.
+  switchView('compose');
+  const links = document.getElementById('bulkLinks');
+  const existing = (links.value || '').trim();
+  const merged = (existing ? existing + '\n' : '') + urls.join('\n');
+  links.value = merged;
+  links.dispatchEvent(new Event('input'));   // refresh line-number gutter
+  // Open the bulk panel.
+  const details = document.getElementById('bulkPanel');
+  if (details) details.open = true;
+  // Scroll into view + clear selection so user knows it landed.
+  links.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  curatedSelection.clear();
+  updateCuratedAddBtn();
 }

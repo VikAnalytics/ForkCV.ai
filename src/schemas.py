@@ -7,6 +7,15 @@ from pydantic import BaseModel, Field
 
 class Bullet(BaseModel):
     text: str = Field(description="Single resume bullet, action-led, metric-bearing where possible.")
+    text_rac: str = Field(
+        default="",
+        description=(
+            "Result–Action–Context phrasing of the same fact (lead with the outcome, "
+            "then what you did, then the context). Populated lazily via "
+            "POST /api/master/generate-rac. Selector ignores this field today; it "
+            "exists so you can review or copy the RAC version manually."
+        ),
+    )
     tags: List[str] = Field(
         default_factory=list,
         description="Short keyword tags for selector matching (e.g. 'Python', 'ETL', 'Leadership').",
@@ -19,6 +28,10 @@ class Experience(BaseModel):
     location: Optional[str] = None
     date: Optional[str] = None
     bullet_pool: List[Bullet] = Field(default_factory=list)
+    # Per-role override for how many bullets the selector should keep. None =
+    # use the selector's default (3). Set to 5 on a flagship role so it gets
+    # more real estate in the tailored CV.
+    target_bullets_override: Optional[int] = None
 
 
 class Project(BaseModel):
@@ -258,4 +271,64 @@ class OutreachRecord(BaseModel):
     created_at: str
     contacts: List[OutreachContact] = Field(default_factory=list)
 
+
+# ─── Job discovery ───────────────────────────────────────────────────────
+class JobPreferences(BaseModel):
+    """User's target-role preferences. Drives Apify queries + hard filters."""
+    roles: List[str] = Field(default_factory=list)        # e.g. ["Data Engineer", "Analytics Engineer"]
+    locations: List[str] = Field(default_factory=list)    # e.g. ["United States", "Remote"]
+    remote_ok: bool = True
+    salary_min_usd: Optional[int] = None                  # annual; jobs below get score penalty (not hard-filter)
+    visa_sponsorship_needed: bool = False                 # if True, jobs marked "no sponsorship" are rejected
+    my_languages: List[str] = Field(default_factory=lambda: ["English"])
+    max_required_yoe: Optional[int] = None                # if set, jobs requiring more years are rejected
+    keywords_include: List[str] = Field(default_factory=list)  # title/JD must contain at least one (OR)
+    keywords_exclude: List[str] = Field(default_factory=list)  # title/JD containing any → reject
+    companies_include: List[str] = Field(default_factory=list)
+    companies_exclude: List[str] = Field(default_factory=list)
+    post_age_days_max: int = 7
+    autogen_top_n: int = 5
+    autogen_min_score: int = 70
+
+
+class DiscoveredJob(BaseModel):
+    id: str                       # uuid hex
+    dedup_key: str                # hash of canonical URL — uniqueness across runs
+    source: str = "apify-linkedin"
+    source_id: Optional[str] = None
+    company: str = ""
+    title: str = ""
+    location: str = ""
+    posted_at: Optional[str] = None    # ISO; may be coarse ("3 days ago" → resolved relative to discovery time)
+    salary: Optional[str] = None       # free-text from posting
+    description: str = ""              # full JD text (truncated to ~6k chars for storage sanity)
+    application_link: str = ""         # canonical URL
+    # Derived signals
+    score: int = 0                     # 0-100 fit score
+    score_breakdown: dict = Field(default_factory=dict)
+    sponsorship_status: str = "unspecified"   # mirrors SponsorshipInfo.status
+    languages_required: List[str] = Field(default_factory=list)   # languages from extractor (required ones)
+    yoe_required: Optional[int] = None
+    # User actions
+    rejected: bool = False             # filtered out by hard rules
+    rejection_reason: str = ""
+    applied: bool = False
+    applied_id: Optional[str] = None
+    generation_id: Optional[str] = None
+    # Bookkeeping
+    discovered_at: str = ""            # ISO
+    last_seen_at: str = ""             # bumped each run we re-encounter it
+
+
+class DiscoveryRun(BaseModel):
+    id: str
+    started_at: str
+    finished_at: Optional[str] = None
+    source: str = "apify-linkedin"
+    raw_count: int = 0
+    added: int = 0
+    dup_skipped: int = 0
+    rejected: int = 0
+    autogen_count: int = 0
+    error: Optional[str] = None
 

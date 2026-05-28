@@ -18,6 +18,8 @@ from typing import List
 from .schemas import SponsorshipInfo
 
 # Terms that trigger interest in a sentence at all.
+# Includes citizenship / clearance / ITAR / "US person" because those imply
+# no-sponsorship for non-citizens.
 TRIGGER_RE = re.compile(
     r"\b("
     r"sponsorship|sponsor(?:ing|s|ed)?|"
@@ -29,7 +31,14 @@ TRIGGER_RE = re.compile(
     r"green\s*card|"
     r"opt\s+(?:status|holders?)|"
     r"ead|"
-    r"employment\s+authoriz(?:ation|ed)"
+    r"employment\s+authoriz(?:ation|ed)|"
+    r"u\.?\s*s\.?\s+citizen(?:ship)?s?|"
+    r"united\s+states\s+citizen(?:ship)?s?|"
+    r"u\.?\s*s\.?\s+person(?:s)?|"
+    r"security\s+clearance|"
+    r"(?:secret|top\s+secret|ts/?sci|public\s+trust)\s+clearance|"
+    r"clearance|"
+    r"itar|ear[-\s]controlled"
     r")\b",
     re.IGNORECASE,
 )
@@ -51,6 +60,23 @@ NEG_PATTERNS = [
     r"(?:[^.\n]*?)(?:without\s+(?:current\s+or\s+future\s+)?sponsorship|without\s+(?:the\s+)?need\s+for\s+sponsorship)",
     r"\bsponsorship\s+is\s+not\s+offered",
     r"\bunable\s+to\s+sponsor\s+(?:visas?|candidates?)",
+    # Citizenship requirements — implies no visa sponsorship.
+    r"\b(?:u\.?\s*s\.?|united\s+states)\s+citizen(?:ship)?\s+(?:is\s+)?(?:required|necessary|mandatory|a\s+must)",
+    r"\bmust\s+be\s+(?:a\s+)?(?:u\.?\s*s\.?|united\s+states)\s+citizen",
+    r"\b(?:u\.?\s*s\.?|united\s+states)\s+citizens?\s+only",
+    r"\brestricted\s+to\s+(?:u\.?\s*s\.?|united\s+states)\s+citizens?",
+    r"\bopen\s+(?:only\s+)?to\s+(?:u\.?\s*s\.?|united\s+states)\s+citizens?",
+    r"\bu\.?\s*s\.?\s+persons?\s+only\b",
+    # Security clearance requirements — citizenship-gated in practice.
+    # Loose: any of {active|current|maintained|valid} + ... + "clearance" within
+    # the same sentence ⇒ this is a US-government role, no sponsorship.
+    r"\bsecurity\s+clearance\s+(?:is\s+)?(?:required|mandatory|necessary)",
+    r"\b(?:active|current|maintained|valid)[^.\n]{0,80}clearance\b",
+    r"\b\"?(?:secret|top\s+secret|ts/?sci|public\s+trust)\"?[^.\n]{0,60}clearance\b",
+    r"\bclearance[^.\n]{0,60}(?:required|mandatory)",
+    r"\bmust\s+(?:be\s+able\s+to\s+)?(?:obtain|maintain|hold|possess)\s+(?:a\s+|an\s+)?(?:secret|top\s+secret|ts/?sci|public\s+trust|security)?\s*clearance",
+    r"\bitar(?:[-\s]controlled)?\b",
+    r"\bear[-\s]controlled\b",
 ]
 NEG_RE = re.compile("|".join(NEG_PATTERNS), re.IGNORECASE)
 

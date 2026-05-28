@@ -12,6 +12,8 @@ Local AI-powered resume tailoring. Drop in your master CV (PDF), paste a job lin
 - **Applied-jobs tracker**: mark applications as you submit, edit status (applied / assessment / interview / offer / rejected / withdrew / ghosted), notes, date. Persists across refreshes.
 - **Master-CV editor**: edit bullets, skills, roles, and projects from the browser. Saves back to `data/master_cv_bank.json`.
 - **Outreach (optional)**: for each generated resume, find 10 ranked contacts at the company (recruiters / hiring managers / team ICs) via the Hunter.io API, with per-contact LinkedIn note + email draft. Hunter free tier covers ~25 searches/mo. Set `HUNTER_API_KEY` in `.env.local` to enable.
+- **Job discovery (optional)**: scrape LinkedIn job listings against your preferences (roles, locations, salary, visa needs, languages, max YoE, keywords), dedupe across runs, hard-filter + score each job, and auto-tailor resumes for the top N matches. Persists locally + optionally upserts to a Google Sheet. Apify + Sheets keys go in `.env.local`. See "Discovery flow" below.
+- **Auto-apply agent (experimental, NOT production-ready)**: Playwright-driven headed browser that opens the application URL, follows LinkedIn redirects, and tries to fill the form. Greenhouse + Phenom adapters reach the "form filled" stage; submit is intentionally gated off. ATS DOMs vary by employer (especially Phenom tenants) so each company often needs custom selector tuning. **In practice you'll still review + submit manually.** The auto-tailored resume + outreach drafts are where this tool produces real value today.
 
 All state (master CV, generation history, applied jobs) lives on your local disk under `data/`. Nothing leaves your machine except the JD + master CV sent to the OpenAI API for analysis and selection.
 
@@ -97,6 +99,105 @@ The message generator is heavily prompt-engineered to avoid AI-tone tells (no "I
 
 Drafts are cached per generation in `data/outreach.json` so re-opening a past job restores them without re-querying Hunter.
 
+### Discovery flow (optional)
+
+Twice-daily (or on-demand) job discovery that scrapes LinkedIn, scores each job against your preferences, and auto-tailors resumes for the best matches.
+
+**Setup:**
+
+1. **Apify** — sign up at <https://console.apify.com>, get a token at Settings → Integrations → API. Add to `.env.local`:
+   ```
+   APIFY_API_TOKEN=apify_api_xxx
+   ```
+   Free tier covers ~5,000 jobs/mo; the default actor (`bebity~linkedin-jobs-scraper`) costs ~$0.50-1 per 1,000 jobs. 200 jobs/day × 2 runs ≈ $6-12/mo extra.
+
+2. **(Optional) Google Sheets** — for a synced online tracker.
+   - Create a Google Cloud project at <https://console.cloud.google.com>
+   - Enable the Sheets API (APIs & Services → Library → "Google Sheets API" → Enable)
+   - Create a service account (IAM & Admin → Service Accounts → Create)
+   - Generate a JSON key (Keys → Add Key → JSON), save to e.g. `data/sheets-sa.json`
+   - Create a Google Sheet, share it with the service-account email (Editor access)
+   - Add to `.env.local`:
+     ```
+     GOOGLE_SERVICE_ACCOUNT_JSON=data/sheets-sa.json
+     SHEETS_SPREADSHEET_ID=<the long id in your sheet's URL>
+     SHEETS_RANGE=Sheet1!A1
+     ```
+
+3. **Configure preferences** in the web UI: click **Preferences** in the topbar, fill the form:
+   - Target roles (one per line)
+   - Locations + remote toggle
+   - Min salary, visa needs, languages, max YoE
+   - Keywords include / exclude, companies include / exclude
+   - Auto-generate top N + min score threshold
+
+4. **Run** — open the **Discovered jobs** drawer and click **Run discovery now**. ~3-10 minutes for the Apify run + auto-tailoring. The drawer polls every 5s and refreshes when the run completes.
+
+**What you see per job:** company, title, location, posted-at, salary (when scraped), visa-sponsorship pill (green/red/amber/grey), YoE pill, language pill, 0-100 fit score, **Open posting ↗**, **Generate resume** / **Open resume**, **Mark applied**, delete. Filter by company/title, hide rejected, hide applied.
+
+**Auto-tailoring**: any job that passes all hard filters AND scores at or above your `Min score threshold` (default 70) is automatically resume-tailored, up to `Top N` per run (default 5). Caps OpenAI cost at ~$0.25/run.
+
+**Scheduling twice daily** (your machine must be reachable):
+- **Option A: cron-job.org** (free, public URL needed). Use **ngrok** or **Cloudflare Tunnel** to expose `http://127.0.0.1:8001` to the internet. Then create a cron-job.org job that POSTs to `https://<your-tunnel>/api/discovery/run` at 08:00 and 20:00.
+- **Option B: macOS launchd** (local). Create a `.plist` that runs `curl -X POST http://127.0.0.1:8001/api/discovery/run` twice daily. Server must be running at trigger time.
+- **Option C: manual** — just click **Run discovery now** when you remember.
+
+**Data layout:**
+- `data/preferences.json` — your prefs (drawer-edited)
+- `data/discovered_jobs.json` — all discovered jobs (dedup'd, with state)
+- `data/discovery_runs.json` — last 20 run summaries
+- Google Sheet (if configured) — 6 tabs (US, Europe, UAE, Australia & NZ, UK, Other), routed by location, refreshed each run + each `POST /api/sheets/sync`. Hard-rejected jobs (visa/lang/YoE/keyword/company filters) are excluded — they stay in the local drawer for transparency.
+
+### PersonalProfile — your application source of truth
+
+Single JSON file (`data/personal_profile.json`) the auto-apply field mapper consults to fill every form question. 117 fields across 18 categories: identity / location / work auth (US/UK/EU/Canada/UAE/Australia granular flags) / EEO (gender, race, hispanic_or_latino, veteran, disability, LGBTQ, religion) / online profiles (LinkedIn, GitHub, StackOverflow, Behance, Medium, …) / education / languages / career / compensation (current vs expected, USD + local currency) / relocation + travel / work preferences / background check + clearance / referral source / employment history / consent toggles / 9 narrative templates (why interested, biggest strength, 5-year goal, …) / and a `custom_answers: { "label substring": "answer" }` catch-all.
+
+Edit by hand or via:
+```bash
+curl http://127.0.0.1:8001/api/personal-profile        # read
+curl -X POST http://127.0.0.1:8001/api/personal-profile -d @profile.json  # write
+```
+
+When you add fields to the JSON, no schema migration needed — Pydantic forward-compat reads them on next request.
+
+### Auto-apply (experimental — see honest caveat above)
+
+> ⚠️ **Not production-ready.** Each ATS (Workday, Phenom, iCIMS, custom company portals) has its own DOM quirks that require per-employer selector tuning. The agent will navigate, screenshot, and fill known fields — but reliably submitting end-to-end across every employer is an open-ended cat-and-mouse with ATS DOM changes and bot detection. The pragmatic flow today is: let the agent open the form + pre-fill what it can + take screenshots, then YOU review and click submit in the open browser. This still saves real time per application but is not "zero-touch."
+
+The agent opens a real Chromium browser (headed, stealth-patched) using a persistent profile under `data/browser-profile/`, navigates to the job's application URL, fills every field it can match from your `PersonalProfile`, uploads the **tailored** resume PDF for that job, and either stops at the Submit button (default) or clicks it (when `AUTO_APPLY_AUTO_SUBMIT=true`).
+
+**Install Playwright browsers (one-time):**
+
+```bash
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python -m playwright install chromium
+```
+
+**Supported portals (v1):** Greenhouse (production-ready), Lever + Ashby (skeletons reusing Greenhouse logic; submit-button selectors may need tuning per posting). Workday is intentionally NOT implemented yet — its per-tenant subdomain layout + reCAPTCHA requires a dedicated adapter (Phase 4).
+
+**Blocked portals (by design):** LinkedIn Easy Apply, Indeed Apply, Glassdoor Apply. These auto-ban accounts and shadow-reject applications. The detector rejects them with a clear reason. If a job's `application_link` is a LinkedIn URL, click into the posting on LinkedIn and copy the **"Apply on company site"** URL into your discovered-jobs entry instead.
+
+**Configuration in `.env.local`:**
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `AUTO_APPLY_AUTO_SUBMIT` | `false` | When `false`, agent fills + screenshots + STOPS at submit. Recommended for first 5-10 runs. |
+| `AUTO_APPLY_DAILY_CAP` | `10` | Hard cap on submissions per UTC day. |
+| `BROWSER_PROFILE_DIR` | `data/browser-profile` | Persistent browser data dir (cookies + sessions). |
+| `AUTO_APPLY_USER_AGENT` | recent Chrome string | Override if needed. |
+
+**Kill switches built in:** CAPTCHA presence on the page → halt + status `blocked`. 3 consecutive failures → halt for the day (in-process counter, resets on server restart). Manual reset via server restart.
+
+**UI:**
+- **Per-row "Auto-apply" button** on each Discovered-jobs card → confirms → runs the agent in the background → updates status in the Auto-apply drawer.
+- **Topbar "Auto-apply (N)" button** → drawer with live attempt status, screenshots at each step (page load / filled / after submit), step log, error messages. Polls every 4 s when open.
+
+**Audit trail:**
+- `data/apply_attempts.json` — last 200 attempts with full step logs, screenshots paths, submit-mode, errors.
+- `data/screenshots/<attempt_id>/*.png` — per-attempt screenshots. Viewable in the drawer; click to open full-size.
+
+**Safety posture:** the agent never opens a tab without your explicit click. It honors a hard daily cap. It stops on CAPTCHA. It never submits when `AUTO_APPLY_AUTO_SUBMIT=false`. Use the screenshots to verify what got filled before flipping submit-on. Run a few in `draft` mode first.
+
 ## Architecture
 
 ```
@@ -146,6 +247,18 @@ ForkCV.ai/
 | `POST /api/outreach/reveal` | Hunter email-finder for one cached contact; updates `outreach.json` in place |
 | `GET /api/outreach/{generation_id}` | Fetch cached outreach record (or `null`) |
 | `DELETE /api/outreach/{generation_id}` | Remove cached outreach |
+| `GET /api/preferences` · `POST /api/preferences` | Read / write `data/preferences.json` |
+| `POST /api/discovery/run` | Kick off a discovery run in the background; returns run record |
+| `GET /api/discovery/status` | Latest run state (in-flight or finished) |
+| `GET /api/discovery/jobs` | List all discovered jobs |
+| `PATCH /api/discovery/jobs/{id}` | Update applied / rejected / generation_id |
+| `DELETE /api/discovery/jobs/{id}` | Remove |
+| `GET /api/sheets/status` | Sheets sync configuration check |
+| `POST /api/sheets/sync` | Manually sync `discovered_jobs.json` to the configured Google Sheet |
+| `POST /api/apply/{job_id}` | Kick off the auto-apply agent for a discovered job |
+| `GET /api/apply/attempts` | List recent attempts (live + finished) |
+| `GET /api/apply/attempts/{id}` | Full attempt record with step logs |
+| `GET /api/apply/screenshot/{id}/{file}` | Serve a per-step screenshot PNG |
 
 ## Privacy
 

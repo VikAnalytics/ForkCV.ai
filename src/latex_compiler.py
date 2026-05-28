@@ -119,10 +119,39 @@ def build_jinja_env(templates_dir: Path) -> Environment:
     return env
 
 
-def render_tex(cv: MasterCV, *, templates_dir: Path, template_name: str = "resume.tex.j2") -> str:
+# Tightness presets — used by the page-fit retry loop. Each level reduces
+# font size + margins. Tweak here if you want different gradations.
+TIGHTNESS_PRESETS = [
+    {"font_pt": "10",   "margin_lr": "0.8",  "margin_tb": "0.5"},   # normal
+    {"font_pt": "9.5",  "margin_lr": "0.6",  "margin_tb": "0.4"},   # tight
+    {"font_pt": "9",    "margin_lr": "0.5",  "margin_tb": "0.35"},  # very tight
+    {"font_pt": "8.5",  "margin_lr": "0.4",  "margin_tb": "0.3"},   # last resort
+]
+
+
+def render_tex(
+    cv: MasterCV,
+    *,
+    templates_dir: Path,
+    template_name: str = "resume.tex.j2",
+    tightness: int = 0,
+) -> str:
+    """Render the resume LaTeX from `cv`. `tightness` (0-3) picks a preset
+    from TIGHTNESS_PRESETS — higher = smaller font + tighter margins."""
     env = build_jinja_env(templates_dir)
     template = env.get_template(template_name)
-    return template.render(cv=cv)
+    preset = TIGHTNESS_PRESETS[max(0, min(tightness, len(TIGHTNESS_PRESETS) - 1))]
+    return template.render(cv=cv, **preset)
+
+
+def _count_pdf_pages(pdf_path: Path) -> int:
+    """Return the page count of a PDF. Falls back to 1 on import error."""
+    try:
+        import fitz  # PyMuPDF
+        with fitz.open(str(pdf_path)) as doc:
+            return doc.page_count
+    except Exception:
+        return 1
 
 
 def compile_pdf(tex_path: Path, *, out_dir: Path | None = None) -> Path:

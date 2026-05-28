@@ -3,85 +3,198 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Master Resume Builder — local</title>
+    <title>ForkCV — local</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
     <header class="topbar">
-      <h1>Master Resume Builder <span class="muted">— local</span></h1>
+      <h1>ForkCV <span class="muted">— local</span></h1>
       <div class="topbar-spacer"></div>
-      <button id="openAppliedBtn" class="btn btn-ghost">Applied jobs (0)</button>
-      <button id="editMasterBtn" class="btn btn-ghost">Edit master CV</button>
+      <span id="discoveryRunStatusPill" class="status-pill"></span>
       <span id="masterStatus" class="status-pill">loading master CV…</span>
     </header>
 
-    <div id="masterBackdrop" class="master-backdrop hidden"></div>
-    <aside id="masterDrawer" class="master-drawer hidden" aria-hidden="true">
-      <div class="master-drawer-header">
-        <h2>Master CV</h2>
-        <span class="muted" id="masterDrawerStatus"></span>
-        <div class="topbar-spacer"></div>
-        <button id="masterSaveBtn" class="btn btn-primary">Save</button>
-        <button id="masterCloseBtn" class="btn">Close</button>
-      </div>
-      <div class="master-drawer-body" id="masterDrawerBody"></div>
-    </aside>
+    <div class="shell">
+      <nav class="rail" aria-label="Primary">
+        <button class="rail-btn active" data-view="compose" title="Compose (C)">
+          <span class="rail-ico">📝</span>
+          <span class="rail-label">Compose</span>
+        </button>
+        <button class="rail-btn" data-view="discovered" title="Discovered jobs (D)">
+          <span class="rail-ico">🔍</span>
+          <span class="rail-label">Discovered <span id="railDiscoveredBadge" class="rail-badge hidden">0</span></span>
+        </button>
+        <button class="rail-btn" data-view="curated" title="Curated jobs (in your sheet)">
+          <span class="rail-ico">📋</span>
+          <span class="rail-label">Curated <span id="railCuratedBadge" class="rail-badge hidden">0</span></span>
+        </button>
+        <button class="rail-btn" data-view="applied" title="Applied (A)">
+          <span class="rail-ico">✓</span>
+          <span class="rail-label">Applied <span id="railAppliedBadge" class="rail-badge hidden">0</span></span>
+        </button>
+        <button class="rail-btn" data-view="master" title="Master CV (M)">
+          <span class="rail-ico">👤</span>
+          <span class="rail-label">Master CV</span>
+        </button>
+        <button class="rail-btn" data-view="settings" title="Settings (S)">
+          <span class="rail-ico">⚙</span>
+          <span class="rail-label">Settings</span>
+        </button>
+      </nav>
 
-    <div id="appliedBackdrop" class="master-backdrop hidden"></div>
-    <aside id="appliedDrawer" class="master-drawer hidden" aria-hidden="true">
-      <div class="master-drawer-header">
-        <h2>Applied jobs</h2>
-        <div class="topbar-spacer"></div>
-        <button id="appliedCloseBtn" class="btn">Close</button>
-      </div>
-      <div class="master-drawer-body" id="appliedDrawerBody"></div>
-    </aside>
+      <main class="view-container">
+        <!-- ─── Compose ────────────────────────────────────────────── -->
+        <section id="view-compose" class="view active">
+          <section class="bulkbar">
+            <details id="bulkPanel">
+              <summary>
+                <span class="bulk-title">Bulk import jobs</span>
+                <span class="muted bulk-hint">paste links → generate one tailored PDF per job</span>
+              </summary>
+              <div class="bulk-body">
+                <label class="block">
+                  Job links <span class="muted">(one per line — LinkedIn or company URLs)</span>
+                  <div class="linked-input">
+                    <div class="line-gutter" id="bulkLinksGutter">1</div>
+                    <textarea id="bulkLinks" rows="6" spellcheck="false" placeholder="https://www.linkedin.com/jobs/view/4112345678&#10;https://jobs.lever.co/acme/abc123&#10;https://careers.stripe.com/jobs/xyz"></textarea>
+                  </div>
+                </label>
+                <label class="block bulk-cookie-row">
+                  <span>LinkedIn <code>li_at</code> cookie <span class="muted">(optional — only for restricted LI jobs; stored in your browser only)</span></span>
+                  <input id="liCookie" type="password" placeholder="AQED…" autocomplete="off" />
+                </label>
+                <div class="bulk-actions">
+                  <button id="bulkParseBtn" class="btn btn-primary">Parse links</button>
+                  <button id="bulkGenerateAllBtn" class="btn" disabled>Generate all</button>
+                  <button id="bulkDownloadZipBtn" class="btn btn-save" disabled>Download all (ZIP)</button>
+                  <label class="rac-toggle"><input type="checkbox" id="bulkUseRac" /> RAC</label>
+                  <span id="bulkProgress" class="bulk-progress muted"></span>
+                </div>
+              </div>
+            </details>
+          </section>
 
-    <section class="bulkbar">
-      <details id="bulkPanel">
-        <summary>
-          <span class="bulk-title">Bulk import jobs</span>
-          <span class="muted bulk-hint">paste links → generate one tailored PDF per job</span>
-        </summary>
-        <div class="bulk-body">
-          <label class="block">
-            Job links <span class="muted">(one per line — LinkedIn or company URLs)</span>
-            <div class="linked-input">
-              <div class="line-gutter" id="bulkLinksGutter">1</div>
-              <textarea id="bulkLinks" rows="6" spellcheck="false" placeholder="https://www.linkedin.com/jobs/view/4112345678&#10;https://jobs.lever.co/acme/abc123&#10;https://careers.stripe.com/jobs/xyz"></textarea>
+          <div class="workspace">
+            <aside id="bulkSidebar" class="bulk-sidebar hidden">
+              <div class="bulk-sidebar-header">
+                <span>Jobs</span>
+                <button id="bulkClearBtn" class="btn-link" title="Clear list">clear</button>
+              </div>
+              <div id="bulkList" class="bulk-list"></div>
+            </aside>
+
+            <div class="workspace-main">
+              <nav class="tabbar">
+                <div id="tabs" class="tabs"></div>
+                <button id="newTabBtn" class="tab-add" title="New tab (Ctrl+T)">+ New tab</button>
+              </nav>
+              <main id="panels"></main>
             </div>
-          </label>
-          <label class="block bulk-cookie-row">
-            <span>LinkedIn <code>li_at</code> cookie <span class="muted">(optional — only for restricted LI jobs; stored in your browser only)</span></span>
-            <input id="liCookie" type="password" placeholder="AQED…" autocomplete="off" />
-          </label>
-          <div class="bulk-actions">
-            <button id="bulkParseBtn" class="btn btn-primary">Parse links</button>
-            <button id="bulkGenerateAllBtn" class="btn" disabled>Generate all</button>
-            <button id="bulkDownloadZipBtn" class="btn btn-save" disabled>Download all (ZIP)</button>
-            <span id="bulkProgress" class="bulk-progress muted"></span>
           </div>
-        </div>
-      </details>
-    </section>
+        </section>
 
-    <div class="workspace">
-      <aside id="bulkSidebar" class="bulk-sidebar hidden">
-        <div class="bulk-sidebar-header">
-          <span>Jobs</span>
-          <button id="bulkClearBtn" class="btn-link" title="Clear list">clear</button>
-        </div>
-        <div id="bulkList" class="bulk-list"></div>
-      </aside>
+        <!-- ─── Discovered ─────────────────────────────────────────── -->
+        <section id="view-discovered" class="view">
+          <div class="view-header">
+            <h2>Discovered jobs</h2>
+            <span class="muted" id="discoveredRunStatus"></span>
+            <div class="topbar-spacer"></div>
+            <button id="discoveryRunBtn" class="btn btn-primary">Run discovery now</button>
+          </div>
+          <div class="view-body">
+            <div class="discovered-toolbar">
+              <input id="discoveredFilter" class="master-input" placeholder="Filter by company / title…" />
+              <label class="muted"><input type="checkbox" id="discoveredHideRejected" checked /> hide rejected</label>
+              <label class="muted"><input type="checkbox" id="discoveredHideApplied" /> hide applied</label>
+              <span class="muted" id="discoveredCount"></span>
+            </div>
+            <div id="discoveredList" class="discovered-list"></div>
+          </div>
+        </section>
 
-      <div class="workspace-main">
-        <nav class="tabbar">
-          <div id="tabs" class="tabs"></div>
-          <button id="newTabBtn" class="tab-add" title="New tab (Ctrl+T)">+ New tab</button>
-        </nav>
+        <!-- ─── Curated (sheet-bound, multi-select) ────────────────── -->
+        <section id="view-curated" class="view">
+          <div class="view-header">
+            <h2>Curated jobs</h2>
+            <span class="muted">jobs that pass your filters · same set that lands in your Google Sheet</span>
+            <div class="topbar-spacer"></div>
+            <button id="curatedAddToBulkBtn" class="btn btn-primary" disabled>Add 0 to bulk import</button>
+          </div>
+          <div class="view-body">
+            <div class="discovered-toolbar">
+              <input id="curatedFilter" class="master-input" placeholder="Filter by company / title / region…" />
+              <label class="muted"><input type="checkbox" id="curatedHideApplied" checked /> hide applied</label>
+              <select id="curatedRegionFilter" class="master-input" style="max-width:160px;">
+                <option value="">All regions</option>
+                <option value="US">US</option>
+                <option value="UK">UK</option>
+                <option value="Europe">Europe</option>
+                <option value="UAE">UAE</option>
+                <option value="Australia & NZ">Australia & NZ</option>
+                <option value="Other">Other</option>
+              </select>
+              <span class="muted" id="curatedCount"></span>
+              <div class="topbar-spacer"></div>
+              <label class="muted"><input type="checkbox" id="curatedSelectAll" /> select all visible</label>
+            </div>
+            <div id="curatedList" class="discovered-list"></div>
+          </div>
+        </section>
 
-        <main id="panels"></main>
-      </div>
+        <!-- ─── Applied ────────────────────────────────────────────── -->
+        <section id="view-applied" class="view">
+          <div class="view-header">
+            <h2>Applied jobs</h2>
+            <div class="topbar-spacer"></div>
+          </div>
+          <div class="view-body" id="appliedDrawerBody"></div>
+        </section>
+
+        <!-- ─── Master CV ──────────────────────────────────────────── -->
+        <section id="view-master" class="view">
+          <div class="view-header">
+            <h2>Master CV</h2>
+            <span class="muted" id="masterDrawerStatus"></span>
+            <div class="topbar-spacer"></div>
+            <button id="masterRacBtn" class="btn">Generate RAC for missing</button>
+            <button id="masterSaveBtn" class="btn btn-primary">Save</button>
+          </div>
+          <div class="view-body" id="masterDrawerBody"></div>
+        </section>
+
+        <!-- ─── Settings (Preferences + Sheets + Profile + Integrations) ─ -->
+        <section id="view-settings" class="view">
+          <div class="view-header">
+            <h2>Settings</h2>
+            <span class="muted" id="prefsStatus"></span>
+            <div class="topbar-spacer"></div>
+            <button id="prefsSaveBtn" class="btn btn-primary">Save preferences</button>
+          </div>
+          <div class="view-body">
+            <div class="settings-tabs">
+              <button class="settings-tab active" data-settings-section="preferences">Preferences</button>
+              <button class="settings-tab" data-settings-section="integrations">Integrations</button>
+            </div>
+            <div id="settings-preferences" class="settings-section active">
+              <div id="prefsDrawerBody"></div>
+            </div>
+            <div id="settings-integrations" class="settings-section">
+              <div class="integration-card">
+                <h3>Google Sheets sync</h3>
+                <div id="sheetsStatusBox" class="muted">checking…</div>
+              </div>
+              <div class="integration-card">
+                <h3>Discovery backend</h3>
+                <div id="discoveryBackendBox" class="muted">checking…</div>
+              </div>
+              <div class="integration-card">
+                <h3>Hunter.io (outreach)</h3>
+                <div class="muted">set HUNTER_API_KEY in .env.local to enable.</div>
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
     </div>
 
     <template id="tabPanelTemplate">
@@ -90,6 +203,9 @@
           <div class="field-row">
             <label>Company <input type="text" data-company placeholder="e.g. Acme" /></label>
             <div class="actions">
+              <label class="rac-toggle" title="Pick from RAC (Result-Action-Context) bullets instead of the original phrasing">
+                <input type="checkbox" data-use-rac /> RAC
+              </label>
               <button data-generate class="btn btn-primary">Generate</button>
               <button data-apply class="btn" disabled>Apply changes</button>
               <button data-save class="btn btn-save" disabled>Save PDF</button>

@@ -33,9 +33,14 @@ TARGET_PROJECT_BULLET_CHARS_MIN = 220
 TARGET_PROJECT_BULLET_CHARS_MAX = 320
 
 
-def target_bullets_for_role(role_index: int) -> int:
-    """Flat 3 bullets per role, no tiering. If page overflows, tighten the
-    template (font/margins) — don't drop bullets."""
+def target_bullets_for_role(role_index: int, exp=None) -> int:
+    """Returns the bullet count for a given role. Defaults to MAX_BULLETS_PER_ROLE
+    unless the Experience explicitly sets `target_bullets_override`."""
+    if exp is not None and getattr(exp, "target_bullets_override", None):
+        try:
+            return max(1, int(exp.target_bullets_override))
+        except (TypeError, ValueError):
+            pass
     return MAX_BULLETS_PER_ROLE
 
 SYSTEM_PROMPT = f"""You are an elite Technical Recruiter performing the highest-leverage step \
@@ -187,10 +192,12 @@ phrasing unchanged rather than invent one.
 become a bullet about "dbt model deployment" — pick a different source bullet if the JD asks for \
 dbt and no bullet fits.
 
-6. SELECTION COUNT — EXPERIENCE: RULE OF 3 (HARD):
-   - For EACH experience role: select EXACTLY 3 bullets. If the source pool has fewer than 3, \
-     select all available; otherwise, exactly 3, no more, no fewer.
-   - Pick by JD relevance, weighted toward `core_impact_areas`.
+6. SELECTION COUNT — EXPERIENCE: per-role, exact:
+   - The user message contains a BULLET COUNTS block listing the exact number of \
+     bullets required for each role. Pick by JD relevance, weighted toward \
+     `core_impact_areas`, until you've hit that count.
+   - If a role's count exceeds its pool size, select all available bullets.
+   - DO NOT default to 3 — flagship roles may require 5+ bullets and others may require only 2.
 
 7. ORDERING: order selected bullets within each role by DESCENDING relevance score.
 
@@ -252,13 +259,25 @@ def _user_message(master_cv: MasterCV, jd_analysis: JDAnalysis) -> str:
             for p in master_cv.projects
         ],
     }
+    # Build a per-role bullet-count manifest (honoring target_bullets_override).
+    per_role_counts = []
+    for i, e in enumerate(master_cv.experience):
+        target = min(target_bullets_for_role(i, e), len(e.bullet_pool))
+        per_role_counts.append(
+            f"  - Index {i}: {e.role} @ {e.company} → EXACTLY {target} bullets "
+            f"(pool has {len(e.bullet_pool)} candidates)"
+        )
+    counts_block = "\n".join(per_role_counts)
+
     return (
         "MASTER_CV (bullet pools):\n"
         f"{json.dumps(cv_payload, indent=2)}\n\n"
         "JD_ANALYSIS:\n"
         f"{jd_analysis.model_dump_json(indent=2)}\n\n"
-        f"Return TailoredSelection with top-{MAX_BULLETS_PER_ROLE} bullets per experience role, "
-        f"and top-{MAX_PROJECTS} projects with {MAX_BULLETS_PER_PROJECT} summarized bullet each."
+        "BULLET COUNTS — these OVERRIDE any default rule-of-3 in the system prompt. "
+        "Pick exactly this many bullets for each role, no more, no fewer:\n"
+        f"{counts_block}\n\n"
+        f"Also return EXACTLY {REQUIRED_PROJECTS} projects with {MAX_BULLETS_PER_PROJECT} bullet each."
     )
 
 
@@ -271,7 +290,7 @@ def _validate_tiered_bullets(master_cv: MasterCV, selection: TailoredSelection) 
     }
     for i, exp in enumerate(master_cv.experience):
         pool_size = len(exp.bullet_pool)
-        target = min(target_bullets_for_role(i), pool_size)
+        target = min(target_bullets_for_role(i, exp), pool_size)
         key = (exp.company.strip().lower(), exp.role.strip().lower())
         sel = selections_by_key.get(key)
         actual = len(sel.selected_bullets) if sel else 0
@@ -311,9 +330,9 @@ def select(
     if warnings:
         retry_msg = (
             _user_message(master_cv, jd_analysis)
-            + "\n\nIMPORTANT: your previous response violated the tiered bullet cap. "
-            + "Index 0,1 → 3 bullets; index 2,3 → 2 bullets; index 4+ → 1 bullet. "
-            + "Violations from last attempt:\n- "
+            + "\n\nIMPORTANT: your previous response had the wrong bullet counts. "
+            + "Re-read the BULLET COUNTS block above and produce EXACTLY the specified "
+            + "number of bullets per role. Violations from last attempt:\n- "
             + "\n- ".join(warnings)
             + "\nReturn a corrected TailoredSelection."
         )
@@ -332,7 +351,7 @@ def select(
     # Final defense: truncate per-role bullets to the tiered cap. Under-cap is fine
     # if the pool is genuinely small; over-cap gets clipped to the tier maximum.
     role_target_by_key = {
-        (e.company.strip().lower(), e.role.strip().lower()): target_bullets_for_role(i)
+        (e.company.strip().lower(), e.role.strip().lower()): target_bullets_for_role(i, e)
         for i, e in enumerate(master_cv.experience)
     }
     for sel in parsed.experience_selections:
